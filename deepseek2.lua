@@ -1,239 +1,162 @@
---[[
-    ═══════════════════════════════════════════════════════════════
-    AI OVERHAUL — WindUI Exploit Hub
-    Built on WindUI (Beta) by Footagesus
-    Docs: https://footagesus.github.io/WindUI-Docs/docs
-    ═══════════════════════════════════════════════════════════════
-]]
+-- // eclipse - examination
+-- // only works in examination (10165583746)
+-- // ui: windui by footagesus
 
--- ═══════════════════════════════════════════════════════════════
--- SERVICES
--- ═══════════════════════════════════════════════════════════════
+-- // services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local Lighting = game:GetService("Lighting")
-local SoundService = game:GetService("SoundService")
-local CollectionService = game:GetService("CollectionService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Debris = game:GetService("Debris")
 local Workspace = game:GetService("Workspace")
 
-local LocalPlayer = Players.LocalPlayer
+local LP = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
--- ═══════════════════════════════════════════════════════════════
--- LOAD WINDUI
--- ═══════════════════════════════════════════════════════════════
-local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+-- // game guard
+if game.PlaceId ~= 10165583746 then
+    pcall(function()
+        LP:Kick("This game is not supported.")
+    end)
+    return
+end
 
--- ═══════════════════════════════════════════════════════════════
--- GLOBAL STATE
--- ═══════════════════════════════════════════════════════════════
-local State = {
-    AimbotEnabled = false,
-    AimKeyDown = false,
-    AimMode = "Always", -- Always / Hold / Toggle
-    Wallcheck = true,
-    FOV = 120,
-    Smoothness = 0.25,
-    MaxDistance = 500,
-    TargetPart = "Head",
-    HitboxEnabled = false,
-    HitboxSize = 6,
-    HitboxVisual = false,
-    HitboxTransparency = 0.7,
-    ESPEnabled = false,
-    ESPHighlight = true,
-    ESPName = true,
-    ESPHealth = true,
-    ESPDistance = 200,
-    ESPColor = Color3.fromRGB(255, 60, 60),
-    InfiniteStamina = false,
-    InfiniteNVG = false,
-    ReducedMotion = false,
-    MobileMode = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled,
-    NotificationsEnabled = true,
+-- // load windui
+local WindUI = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
+))()
+
+-- // state
+local S = {
+    -- aimbot
+    aimOn = false,
+    aimActive = false,
+    aimDown = false,
+    aimMode = "Toggle",
+    aimKeyName = "E",
+    aimFOV = 140,
+    aimSmooth = 0.22,
+    aimDist = 600,
+    aimPart = "Head",
+    wallcheck = true,
+    showFOV = true,
+
+    -- hitbox
+    hbOn = false,
+    hbSize = 6,
+    hbVisual = false,
+    hbOpacity = 0.3,
+
+    -- esp
+    espOn = false,
+    espHL = true,
+    espName = true,
+    espHP = true,
+    espDist = 200,
+    espColor = Color3.fromRGB(255, 70, 70),
+
+    -- perks
+    stamina = false,
+    nvg = false,
+
+    -- interface
+    reduced = false,
+    mobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled,
+    notif = true,
 }
 
-local Connections = {}
-local ActiveHitboxes = {} -- [model] = Part
+local Conns = {}
+local Boxes = {}    -- [model] = Part
+local Esps  = {}    -- [model] = {hl, bb, name, hp}
 
-local function Track(conn)
-    table.insert(Connections, conn)
-    return conn
+local function Track(c) table.insert(Conns, c) return c end
+
+local function Toast(t)
+    if S.notif then WindUI:Notify(t) end
 end
 
-local function Notify(t)
-    if State.NotificationsEnabled then
-        WindUI:Notify(t)
-    end
-end
-
--- ═══════════════════════════════════════════════════════════════
--- WINDOW
--- ═══════════════════════════════════════════════════════════════
+-- // window
 local Window = WindUI:CreateWindow({
-    Title = "AI Overhaul",
-    Icon = "crosshair",
-    Author = "by PremiumDev",
-    Folder = "AIOverhaul",
-    Size = UDim2.fromOffset(520, 400),
-    MinSize = Vector2.new(480, 340),
-    MaxSize = Vector2.new(700, 520),
+    Title = "Eclipse - Examination",
+    Icon = "solar:moon-stars-bold",
+    Author = "Infinite",
+    Folder = "EclipseExamination",
+    Size = UDim2.fromOffset(490, 350),
+    MinSize = Vector2.new(440, 300),
+    MaxSize = Vector2.new(680, 480),
     ToggleKey = Enum.KeyCode.RightShift,
     Transparent = true,
     Theme = "Dark",
     Resizable = true,
-    SideBarWidth = 170,
+    SideBarWidth = 148,
     HideSearchBar = true,
     ScrollBarEnabled = false,
     OpenButton = {
-        Title = "AI Overhaul",
+        Title = "Eclipse",
         CornerRadius = UDim.new(1, 0),
         StrokeThickness = 2,
         Enabled = true,
         Draggable = true,
-        OnlyMobile = false,
         Color = ColorSequence.new(
-            Color3.fromHex("#FF3B5C"),
-            Color3.fromHex("#FF9A3C")
+            Color3.fromHex("#7C3AED"),
+            Color3.fromHex("#22D3EE")
         ),
     },
-    Topbar = {
-        Height = 40,
-        ButtonsType = "Mac",
-    },
+    Topbar = { Height = 38, ButtonsType = "Mac" },
 })
 
 Window:Tag({
-    Title = "v2.0",
+    Title = "v1.0",
     Icon = "zap",
-    Color = Color3.fromHex("#1c1c1c"),
+    Color = Color3.fromHex("#18181b"),
     Border = true,
 })
 
--- ═══════════════════════════════════════════════════════════════
--- HELPERS
--- ═══════════════════════════════════════════════════════════════
-
--- Get all AI characters (models in workspace.Characters with an "AI" child)
-local function GetAICharacters()
-    local out = {}
-    local chars = Workspace:FindFirstChild("Characters")
-    if not chars then return out end
-    for _, v in ipairs(chars:GetChildren()) do
-        if v:IsA("Model") and v:FindFirstChild("AI") then
-            local hum = v:FindFirstChildOfClass("Humanoid")
+-- // ai helpers
+local function GetAIs()
+    local list = {}
+    local folder = Workspace:FindFirstChild("Characters")
+    if not folder then return list end
+    for _, m in ipairs(folder:GetChildren()) do
+        if m:IsA("Model") and m:FindFirstChild("AI") then
+            local hum = m:FindFirstChildOfClass("Humanoid")
             if hum and hum.Health > 0 then
-                table.insert(out, v)
+                table.insert(list, m)
             end
         end
     end
-    return out
+    return list
 end
 
--- Screen-space distance from crosshair (for FOV check)
-local function GetScreenDist(worldPos)
-    local screenPos, onScreen = Camera:WorldToScreenPoint(worldPos)
-    if not onScreen then return math.huge end
-    local center = Camera.ViewportSize / 2
-    return (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-end
-
--- Wallcheck: is there clear line of sight from camera to target?
-local function HasLineOfSight(fromPos, toPos, ignoreList)
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = ignoreList or { Camera, LocalPlayer.Character, Workspace.Terrain }
-    params.IgnoreWater = true
-    local dir = (toPos - fromPos)
-    local result = Workspace:Raycast(fromPos, dir, params)
-    if not result then return true end
-    -- If the hit instance is part of the target, LOS is clear
-    return false, result
-end
-
--- Get the target part for an AI character
-local function GetTargetPart(model)
-    if State.TargetPart == "Hitbox" then
-        local hb = model:FindFirstChild("HitboxExpander")
-        if hb then return hb end
+local function TargetPart(model)
+    if S.aimPart == "Hitbox" then
+        local b = model:FindFirstChild("EclipseHitbox")
+        if b then return b end
     end
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if hum and hum.RootPart then return hum.RootPart end
-    return model:FindFirstChild("Head") or model.PrimaryPart
-end
-
--- ═══════════════════════════════════════════════════════════════
--- FOV CIRCLE
--- ═══════════════════════════════════════════════════════════════
-local FOVCircle
-local function CreateFOVCircle()
-    if FOVCircle then return end
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "AIFOV"
-    gui.IgnoreGuiInset = true
-    gui.ResetOnSpawn = false
-    gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-
-    local circle = Instance.new("Frame")
-    circle.Name = "Circle"
-    circle.BackgroundTransparency = 1
-    circle.Size = UDim2.fromOffset(State.FOV * 2, State.FOV * 2)
-    circle.Position = UDim2.fromScale(0.5, 0.5)
-    circle.AnchorPoint = Vector2.new(0.5, 0.5)
-    circle.Parent = gui
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(255, 255, 255)
-    stroke.Thickness = 1.5
-    stroke.Transparency = 0.5
-    stroke.Parent = circle
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(1, 0)
-    corner.Parent = circle
-
-    FOVCircle = { gui = gui, circle = circle, stroke = stroke }
-end
-
-local function UpdateFOVCircle()
-    if not FOVCircle then return end
-    FOVCircle.circle.Size = UDim2.fromOffset(State.FOV * 2, State.FOV * 2)
-    FOVCircle.circle.Visible = State.AimbotEnabled
-end
-
-local function DestroyFOVCircle()
-    if FOVCircle then
-        FOVCircle.gui:Destroy()
-        FOVCircle = nil
+    if S.aimPart == "HumanoidRootPart" then
+        local hum = model:FindFirstChildOfClass("Humanoid")
+        if hum and hum.RootPart then return hum.RootPart end
     end
+    return model:FindFirstChild("Head")
+        or model:FindFirstChild("HumanoidRootPart")
+        or model.PrimaryPart
 end
 
--- ═══════════════════════════════════════════════════════════════
--- HITBOX EXPANDER (ILLUSION — invisible box, head stays normal)
--- ═══════════════════════════════════════════════════════════════
-local function ApplyHitbox(model)
-    if not model or not model.Parent then return end
-    if ActiveHitboxes[model] then return end
-
+-- // hitbox — invisible box welded to head. head stays normal size
+local function AddBox(model)
+    if Boxes[model] then return end
     local head = model:FindFirstChild("Head")
-    if not head or not head:IsA("BasePart") then return end
+    if not head then return end
 
-    -- Create invisible box welded to head
     local box = Instance.new("Part")
-    box.Name = "HitboxExpander"
-    box.Size = Vector3.new(State.HitboxSize, State.HitboxSize, State.HitboxSize)
-    box.Transparency = State.HitboxVisual and (1 - State.HitboxTransparency) or 1
+    box.Name = "EclipseHitbox"
+    box.Size = Vector3.new(S.hbSize, S.hbSize, S.hbSize)
+    box.Transparency = S.hbVisual and (1 - S.hbOpacity) or 1
     box.CanCollide = false
     box.CanQuery = true
     box.CanTouch = false
     box.Massless = true
     box.Anchored = false
     box.Material = Enum.Material.ForceField
-    box.Color = Color3.fromRGB(255, 80, 80)
+    box.Color = Color3.fromRGB(124, 58, 237)
     box.CFrame = head.CFrame
 
     local weld = Instance.new("WeldConstraint")
@@ -242,194 +165,168 @@ local function ApplyHitbox(model)
     weld.Parent = box
 
     box.Parent = model
-    ActiveHitboxes[model] = box
+    Boxes[model] = box
 end
 
-local function RemoveHitbox(model)
-    local box = ActiveHitboxes[model]
-    if box then
-        box:Destroy()
-        ActiveHitboxes[model] = nil
-    end
+local function DelBox(model)
+    local b = Boxes[model]
+    if b then b:Destroy() Boxes[model] = nil end
 end
 
-local function RefreshAllHitboxes()
-    if State.HitboxEnabled then
-        for _, model in ipairs(GetAICharacters()) do
-            ApplyHitbox(model)
-        end
+local function RefreshBoxes()
+    if S.hbOn then
+        for _, m in ipairs(GetAIs()) do AddBox(m) end
     else
-        for model in pairs(ActiveHitboxes) do
-            RemoveHitbox(model)
-        end
+        for m in pairs(Boxes) do DelBox(m) end
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- ESP FOR AI
--- ═══════════════════════════════════════════════════════════════
-local ESPObjects = {} -- [model] = {highlight, billboard, nameLabel, healthLabel}
-
-local function ClearESP(model)
-    local data = ESPObjects[model]
-    if not data then return end
-    if data.highlight then data.highlight:Destroy() end
-    if data.billboard then data.billboard:Destroy() end
-    ESPObjects[model] = nil
+-- // esp
+local function DelESP(model)
+    local d = Esps[model]
+    if not d then return end
+    if d.hl then d.hl:Destroy() end
+    if d.bb then d.bb:Destroy() end
+    Esps[model] = nil
 end
 
-local function ClearAllESP()
-    for model in pairs(ESPObjects) do
-        ClearESP(model)
-    end
+local function ClearESP()
+    for m in pairs(Esps) do DelESP(m) end
 end
 
-local function ApplyESP(model)
-    if not model or not model.Parent then return end
-    if not State.ESPEnabled then return end
-    if ESPObjects[model] then return end
-
+local function AddESP(model)
+    if not S.espOn or Esps[model] then return end
     local head = model:FindFirstChild("Head") or model.PrimaryPart
     if not head then return end
 
-    local data = {}
+    local d = {}
 
-    if State.ESPHighlight then
+    if S.espHL then
         local hl = Instance.new("Highlight")
-        hl.Name = "AIOverhaul_HL"
+        hl.Name = "EclipseHL"
         hl.Adornee = model
-        hl.FillColor = State.ESPColor
+        hl.FillColor = S.espColor
         hl.OutlineColor = Color3.fromRGB(255, 255, 255)
         hl.OutlineTransparency = 1
         hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
         hl.Parent = model
-        data.highlight = hl
+        d.hl = hl
     end
 
     local bb = Instance.new("BillboardGui")
-    bb.Name = "AIOverhaul_BB"
+    bb.Name = "EclipseBB"
     bb.Adornee = head
-    bb.Size = UDim2.fromOffset(100, 40)
+    bb.Size = UDim2.fromOffset(100, 36)
     bb.StudsOffset = Vector3.new(0, 3.5, 0)
     bb.AlwaysOnTop = true
-    bb.MaxDistance = State.ESPDistance
+    bb.MaxDistance = S.espDist
     bb.Parent = model
-    data.billboard = bb
+    d.bb = bb
 
-    if State.ESPName then
-        local nameLabel = Instance.new("TextLabel")
-        nameLabel.Name = "Name"
-        nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
-        nameLabel.BackgroundTransparency = 1
-        nameLabel.TextColor3 = State.ESPColor
-        nameLabel.TextStrokeTransparency = 0
-        nameLabel.TextScaled = true
-        nameLabel.Font = Enum.Font.SourceSansBold
-        nameLabel.Text = model.Name
-        nameLabel.Parent = bb
-        data.nameLabel = nameLabel
+    if S.espName then
+        local n = Instance.new("TextLabel")
+        n.Size = UDim2.new(1, 0, 0.5, 0)
+        n.BackgroundTransparency = 1
+        n.TextColor3 = S.espColor
+        n.TextStrokeTransparency = 0
+        n.TextScaled = true
+        n.Font = Enum.Font.GothamBold
+        n.Text = model.Name
+        n.Parent = bb
+        d.name = n
     end
 
-    if State.ESPHealth then
-        local healthLabel = Instance.new("TextLabel")
-        healthLabel.Name = "Health"
-        healthLabel.Size = UDim2.new(1, 0, 0.5, 0)
-        healthLabel.Position = UDim2.new(0, 0, 0.5, 0)
-        healthLabel.BackgroundTransparency = 1
-        healthLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-        healthLabel.TextStrokeTransparency = 0
-        healthLabel.TextScaled = true
-        healthLabel.Font = Enum.Font.SourceSans
-        healthLabel.Text = "100 / 100"
-        healthLabel.Parent = bb
-        data.healthLabel = healthLabel
+    if S.espHP then
+        local h = Instance.new("TextLabel")
+        h.Size = UDim2.new(1, 0, 0.5, 0)
+        h.Position = UDim2.new(0, 0, 0.5, 0)
+        h.BackgroundTransparency = 1
+        h.TextColor3 = Color3.fromRGB(255, 255, 255)
+        h.TextStrokeTransparency = 0
+        h.TextScaled = true
+        h.Font = Enum.Font.Gotham
+        h.Text = "100 / 100"
+        h.Parent = bb
+        d.hp = h
     end
 
-    ESPObjects[model] = data
+    Esps[model] = d
 end
 
-local function RefreshAllESP()
-    if not State.ESPEnabled then
-        ClearAllESP()
+local function RefreshESP()
+    if not S.espOn then
+        ClearESP()
         return
     end
-    for _, model in ipairs(GetAICharacters()) do
-        ApplyESP(model)
-    end
+    for _, m in ipairs(GetAIs()) do AddESP(m) end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- INFINITE STAMINA
--- ═══════════════════════════════════════════════════════════════
-local function SetupInfiniteStamina(char)
-    local handler = char:WaitForChild("ClientHandler", 5)
-        or char:WaitForChild("Client", 5)
-        or char:WaitForChild("ClientOLD", 5)
-    if not handler then return end
-    local ok, StateMod = pcall(require, handler:WaitForChild("State", 5))
-    if not ok or not StateMod or not StateMod.stamina then return end
+-- // fov circle
+local fovGui, fovCircle, fovStroke
 
-    local conn = RunService.Heartbeat:Connect(function()
-        if not State.InfiniteStamina then return end
-        StateMod.stamina.current = 200
-        StateMod.stamina.regenDelay = 0
-        StateMod.stamina.fullRegen = false
-        StateMod.stamina.active = false
-        if StateMod.stamina.exhausted ~= nil then
-            StateMod.stamina.exhausted = false
-        end
-    end)
-    Track(conn)
+local function EnsureFOV()
+    if fovGui then return end
+    fovGui = Instance.new("ScreenGui")
+    fovGui.Name = "EclipseFOV"
+    fovGui.IgnoreGuiInset = true
+    fovGui.ResetOnSpawn = false
+    fovGui.Parent = LP:WaitForChild("PlayerGui")
+
+    fovCircle = Instance.new("Frame")
+    fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+    fovCircle.Position = UDim2.fromScale(0.5, 0.5)
+    fovCircle.BackgroundTransparency = 1
+    fovCircle.Visible = false
+    fovCircle.Parent = fovGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = fovCircle
+
+    fovStroke = Instance.new("UIStroke")
+    fovStroke.Color = Color3.fromRGB(124, 58, 237)
+    fovStroke.Thickness = 1.5
+    fovStroke.Transparency = 0.4
+    fovStroke.Parent = fovCircle
 end
 
--- ═══════════════════════════════════════════════════════════════
--- INFINITE NVG
--- ═══════════════════════════════════════════════════════════════
-local function SetupInfiniteNVG(char)
-    local flag = char:FindFirstChild("IsCloaker")
-    if not flag then
-        flag = Instance.new("BoolValue")
-        flag.Name = "IsCloaker"
-        flag.Parent = char
-    end
-    flag.Value = true
-
-    Track(flag.Changed:Connect(function()
-        if State.InfiniteNVG and flag.Value ~= true then
-            flag.Value = true
-        end
-    end))
-
-    Track(char.ChildAdded:Connect(function(child)
-        if State.InfiniteNVG and child.Name == "IsCloaker" and child:IsA("BoolValue") then
-            child.Value = true
-        end
-    end))
+local function UpdateFOV()
+    if not fovGui then return end
+    fovCircle.Size = UDim2.fromOffset(S.aimFOV * 2, S.aimFOV * 2)
+    fovCircle.Visible = S.aimOn and S.showFOV
 end
 
--- ═══════════════════════════════════════════════════════════════
--- AIMBOT CORE
--- ═══════════════════════════════════════════════════════════════
+-- // aimbot helpers
+local function ScreenDist(pos)
+    local sp, on = Camera:WorldToViewportPoint(pos)
+    if not on then return math.huge end
+    local c = Camera.ViewportSize / 2
+    local dx, dy = sp.X - c.X, sp.Y - c.Y
+    return math.sqrt(dx * dx + dy * dy)
+end
 
--- Returns the best target for the aimbot, or nil
-local function FindBestTarget()
-    local mousePos = UserInputService:GetMouseLocation()
-    local best, bestScore = nil, math.huge
+local function LOS(from, to, ignore)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = ignore or { Camera, LP.Character }
+    params.IgnoreWater = true
+    local hit = Workspace:Raycast(from, to - from, params)
+    return hit == nil
+end
 
-    for _, model in ipairs(GetAICharacters()) do
-        local part = GetTargetPart(model)
+local function BestTarget()
+    local best, score = nil, math.huge
+    for _, m in ipairs(GetAIs()) do
+        local part = TargetPart(m)
         if part then
-            -- Distance check
             local dist = (Camera.CFrame.Position - part.Position).Magnitude
-            if dist <= State.MaxDistance then
-                -- FOV check (screen-space)
-                local screenDist = GetScreenDist(part.Position)
-                if screenDist <= State.FOV then
-                    -- Wallcheck
-                    if not State.Wallcheck or HasLineOfSight(Camera.CFrame.Position, part.Position, { Camera, LocalPlayer.Character, model, Workspace.Terrain }) then
-                        -- Score: prefer closest to crosshair
-                        if screenDist < bestScore then
-                            bestScore = screenDist
+            if dist <= S.aimDist then
+                local sd = ScreenDist(part.Position)
+                if sd <= S.aimFOV then
+                    if not S.wallcheck or LOS(Camera.CFrame.Position, part.Position,
+                        { Camera, LP.Character, m }) then
+                        if sd < score then
+                            score = sd
                             best = part
                         end
                     end
@@ -437,286 +334,303 @@ local function FindBestTarget()
             end
         end
     end
-
     return best
 end
 
--- Heartbeat aimbot update
-local function AimbotLoop(dt)
-    if not State.AimbotEnabled then return end
-    if State.AimMode == "Hold" and not State.AimKeyDown then return end
-
-    local targetPart = FindBestTarget()
-    if not targetPart then return end
-
-    local cam = Workspace.CurrentCamera
-    local targetCF = CFrame.lookAt(cam.CFrame.Position, targetPart.Position)
-
-    if State.ReducedMotion then
-        cam.CFrame = targetCF
-    else
-        local alpha = math.clamp(State.Smoothness * dt * 60, 0, 1)
-        cam.CFrame = cam.CFrame:Lerp(targetCF, alpha)
-    end
-end
-
--- ═══════════════════════════════════════════════════════════════
--- THROTTLED UPDATE LOOP (single connection for ESP health + cleanup)
--- ═══════════════════════════════════════════════════════════════
-local updateAccum = 0
-local UPDATE_INTERVAL = 0.12 -- seconds (throttled, not per-frame)
-
-local function ThrottledUpdate(dt)
-    updateAccum = updateAccum + dt
-    if updateAccum < UPDATE_INTERVAL then return end
-    updateAccum = 0
-
-    -- ESP health text + distance culling
-    if State.ESPEnabled then
-        for model, data in pairs(ESPObjects) do
-            if not model.Parent then
-                ClearESP(model)
-            else
-                local hum = model:FindFirstChildOfClass("Humanoid")
-                if hum and data.healthLabel then
-                    data.healthLabel.Text = math.floor(hum.Health) .. " / " .. math.floor(hum.MaxHealth)
-                end
-                if data.billboard then
-                    data.billboard.MaxDistance = State.ESPDistance
-                end
-            end
-        end
-    end
-
-    -- Hitbox cleanup for dead/removed models
-    if State.HitboxEnabled then
-        for model, box in pairs(ActiveHitboxes) do
-            if not model.Parent or not box.Parent then
-                if box then box:Destroy() end
-                ActiveHitboxes[model] = nil
-            end
-        end
-    end
-end
-
--- ═══════════════════════════════════════════════════════════════
--- SINGLE MAIN LOOP
--- ═══════════════════════════════════════════════════════════════
-local mainConn = RunService.Heartbeat:Connect(function(dt)
-    AimbotLoop(dt)
-    ThrottledUpdate(dt)
-end)
-Track(mainConn)
-
--- ═══════════════════════════════════════════════════════════════
--- AI WATCHER (event-driven, no polling)
--- ═══════════════════════════════════════════════════════════════
-local function WatchAI(v)
+-- // ai watcher (event driven, no polling)
+local function OnAI(v)
     if not v:IsA("Model") or not v:FindFirstChild("AI") then return end
-    task.wait(0.05)
+    task.wait(0.1)
     if not v.Parent then return end
-
-    if State.ESPEnabled then ApplyESP(v) end
-    if State.HitboxEnabled then ApplyHitbox(v) end
-
+    if S.hbOn then AddBox(v) end
+    if S.espOn then AddESP(v) end
     v.AncestryChanged:Connect(function()
         if not v.Parent then
-            ClearESP(v)
-            RemoveHitbox(v)
+            DelBox(v)
+            DelESP(v)
         end
     end)
 end
 
-local charFolder = Workspace:WaitForChild("Characters", 5)
-if charFolder then
-    for _, v in ipairs(charFolder:GetChildren()) do
-        WatchAI(v)
+local charsFolder = Workspace:WaitForChild("Characters", 10)
+if charsFolder then
+    for _, v in ipairs(charsFolder:GetChildren()) do
+        task.spawn(OnAI, v)
     end
-    Track(charFolder.ChildAdded:Connect(WatchAI))
+    Track(charsFolder.ChildAdded:Connect(OnAI))
 end
 
--- ═══════════════════════════════════════════════════════════════
--- CHARACTER HOOKS (stamina + NVG)
--- ═══════════════════════════════════════════════════════════════
-local function OnCharacter(char)
-    SetupInfiniteStamina(char)
-    SetupInfiniteNVG(char)
+-- // character setup (stamina + nvg)
+local function SetupChar(char)
+    -- nvg via IsCloaker flag
+    local flag = char:FindFirstChild("IsCloaker")
+    if not flag then
+        flag = Instance.new("BoolValue")
+        flag.Name = "IsCloaker"
+        flag.Parent = char
+    end
+    if S.nvg then flag.Value = true end
+    Track(flag.Changed:Connect(function()
+        if S.nvg and not flag.Value then flag.Value = true end
+    end))
+
+    -- stamina via ClientHandler.State
+    task.spawn(function()
+        local handler
+        for _ = 1, 50 do
+            handler = char:FindFirstChild("ClientHandler")
+                or char:FindFirstChild("Client")
+                or char:FindFirstChild("ClientOLD")
+            if handler then break end
+            task.wait(0.1)
+        end
+        if not handler then return end
+
+        local ok, State = pcall(require, handler:WaitForChild("State", 4))
+        if not ok or not State or not State.stamina then return end
+
+        Track(RunService.Heartbeat:Connect(function()
+            if not S.stamina then return end
+            State.stamina.current = 200
+            State.stamina.regenDelay = 0
+            State.stamina.fullRegen = false
+            State.stamina.active = false
+            if State.stamina.exhausted ~= nil then
+                State.stamina.exhausted = false
+            end
+        end))
+    end)
 end
 
-if LocalPlayer.Character then OnCharacter(LocalPlayer.Character) end
-Track(LocalPlayer.CharacterAdded:Connect(OnCharacter))
+if LP.Character then task.spawn(SetupChar, LP.Character) end
+Track(LP.CharacterAdded:Connect(function(c) task.spawn(SetupChar, c) end))
 
--- ═══════════════════════════════════════════════════════════════
--- UI — SECTIONS
--- ═══════════════════════════════════════════════════════════════
+-- // single main loop (aimbot + throttled esp)
+local espAccum = 0
+Track(RunService.Heartbeat:Connect(function(dt)
+    -- aimbot
+    if S.aimOn then
+        local should = (S.aimMode == "Always")
+            or (S.aimMode == "Hold" and S.aimDown)
+            or (S.aimMode == "Toggle" and S.aimActive)
+        if should then
+            local t = BestTarget()
+            if t then
+                local goal = CFrame.lookAt(Camera.CFrame.Position, t.Position)
+                if S.reduced then
+                    Camera.CFrame = goal
+                else
+                    local a = math.clamp(S.aimSmooth * dt * 60, 0, 1)
+                    Camera.CFrame = Camera.CFrame:Lerp(goal, a)
+                end
+            end
+        end
+    end
 
--- ══════ COMBAT ══════
-local CombatSection = Window:Section({ Title = "Combat" })
+    -- esp hp refresh (throttled to ~8hz)
+    if S.espOn then
+        espAccum = espAccum + dt
+        if espAccum >= 0.12 then
+            espAccum = 0
+            for m, d in pairs(Esps) do
+                if not m.Parent then
+                    DelESP(m)
+                elseif d.hp then
+                    local hum = m:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        d.hp.Text = math.floor(hum.Health) .. " / " .. math.floor(hum.MaxHealth)
+                    end
+                end
+            end
+        end
+    end
+end))
 
-local AimbotTab = CombatSection:Tab({
-    Title = "Aimbot",
-    Icon = "crosshair",
-    IconColor = Color3.fromHex("#FF3B5C"),
-    IconShape = "Square",
-})
+-- // aim key
+Track(UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode[S.aimKeyName or "E"] then
+        if S.aimMode == "Hold" then
+            S.aimDown = true
+        elseif S.aimMode == "Toggle" then
+            S.aimActive = not S.aimActive
+        end
+    end
+end))
 
--- Aim activation
-local AimSection = AimbotTab:Section({ Title = "Activation", Opened = true })
+Track(UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode[S.aimKeyName or "E"] then
+        S.aimDown = false
+    end
+end))
 
-AimSection:Toggle({
+-- // sidebar
+Window:Section({ Title = "Combat", Opened = true })
+local AimTab = Window:Tab({ Title = "Aimbot", Icon = "crosshair" })
+local HBTab  = Window:Tab({ Title = "Hitbox", Icon = "box" })
+
+Window:Section({ Title = "Visuals", Opened = true })
+local ESPTab = Window:Tab({ Title = "ESP", Icon = "eye" })
+
+Window:Section({ Title = "Player", Opened = true })
+local PerkTab = Window:Tab({ Title = "Perks", Icon = "star" })
+
+Window:Section({ Title = "Interface", Opened = true })
+local UITab = Window:Tab({ Title = "Interface", Icon = "settings" })
+
+-- // aimbot tab
+local aimCtl = AimTab:Section({ Title = "Controls", Opened = true })
+
+aimCtl:Toggle({
     Title = "Enable Aimbot",
-    Desc = "Aims at nearest AI target",
+    Desc = "Locks onto the closest AI in range.",
     Icon = "zap",
     Type = "Checkbox",
     Value = false,
     Flag = "AimbotEnabled",
-    Callback = function(state)
-        State.AimbotEnabled = state
-        CreateFOVCircle()
-        UpdateFOVCircle()
-        Notify({
-            Title = state and "Aimbot ON" or "Aimbot OFF",
-            Content = state and "Targeting AI..." or "Aimbot disabled.",
-            Icon = "crosshair",
-        })
+    Callback = function(v)
+        S.aimOn = v
+        S.aimActive = false
+        EnsureFOV()
+        UpdateFOV()
+        Toast({ Title = v and "Aimbot on" or "Aimbot off", Icon = "crosshair" })
     end,
 })
 
-AimSection:Space({ Columns = 1 })
+aimCtl:Space({ Columns = 1 })
 
-local aimModeDropdown = AimSection:Dropdown({
-    Title = "Activation Mode",
-    Desc = "How the aimbot engages",
+aimCtl:Dropdown({
+    Title = "Activation",
+    Desc = "How the aimbot engages.",
     Icon = "mouse-pointer",
     Values = { "Always", "Hold", "Toggle" },
-    Default = "Always",
-    Flag = "AimMode",
+    Default = "Toggle",
+    Flag = "AimbotMode",
     Callback = function(v)
-        State.AimMode = v
-        if v == "Always" then
-            State.AimbotEnabled = true
-        end
-        UpdateFOVCircle()
+        S.aimMode = v
+        S.aimActive = false
     end,
 })
 
-AimSection:Space({ Columns = 1 })
+aimCtl:Space({ Columns = 1 })
 
-local aimKeybind = AimSection:Keybind({
-    Title = "Aim Key (Hold/Toggle)",
-    Desc = "Key to activate aimbot in Hold/Toggle mode",
+aimCtl:Keybind({
+    Title = "Aim Key",
+    Desc = "Used in Hold/Toggle modes. Ignored when Always.",
     Icon = "keyboard",
     Value = "E",
-    Flag = "AimKey",
+    Flag = "AimbotKey",
+    Callback = function(v) S.aimKeyName = v end,
 })
 
-AimSection:Space({ Columns = 1 })
+local aimTgt = AimTab:Section({ Title = "Targeting", Opened = true })
 
--- FOV / smoothness
-local TargetSection = AimbotTab:Section({ Title = "Targeting", Opened = true })
+aimTgt:Dropdown({
+    Title = "Target Part",
+    Desc = "Which bone to aim at.",
+    Icon = "target",
+    Values = { "Head", "Hitbox", "HumanoidRootPart" },
+    Default = "Head",
+    Flag = "AimbotPart",
+    Callback = function(v) S.aimPart = v end,
+})
 
-TargetSection:Slider({
+aimTgt:Space({ Columns = 1 })
+
+aimTgt:Slider({
     Title = "FOV",
-    Desc = "Field of view for target detection",
+    Desc = "Screen-space radius for detection.",
     Icon = "circle-dot",
     Min = 20,
     Max = 600,
-    Default = 120,
+    Default = 140,
     Step = 5,
     Suffix = "px",
     Flag = "AimbotFOV",
     Callback = function(v)
-        State.FOV = v
-        UpdateFOVCircle()
+        S.aimFOV = v
+        UpdateFOV()
     end,
 })
 
-TargetSection:Space({ Columns = 1 })
+aimTgt:Space({ Columns = 1 })
 
-TargetSection:Slider({
+aimTgt:Slider({
     Title = "Smoothness",
-    Desc = "Higher = smoother aim",
+    Desc = "Lower = snappier. Higher = smoother.",
     Icon = "activity",
     Min = 0.02,
     Max = 1,
-    Default = 0.25,
+    Default = 0.22,
     Step = 0.02,
     Flag = "AimbotSmooth",
-    Callback = function(v) State.Smoothness = v end,
+    Callback = function(v) S.aimSmooth = v end,
 })
 
-TargetSection:Space({ Columns = 1 })
+aimTgt:Space({ Columns = 1 })
 
-TargetSection:Slider({
+aimTgt:Slider({
     Title = "Max Distance",
-    Desc = "Max targeting range (studs)",
+    Desc = "Studs.",
     Icon = "ruler",
     Min = 50,
     Max = 2000,
-    Default = 500,
+    Default = 600,
     Step = 50,
     Suffix = " studs",
-    Flag = "AimbotDistance",
-    Callback = function(v) State.MaxDistance = v end,
+    Flag = "AimbotDist",
+    Callback = function(v) S.aimDist = v end,
 })
 
-TargetSection:Space({ Columns = 1 })
+aimTgt:Space({ Columns = 1 })
 
-local targetPartDropdown = TargetSection:Dropdown({
-    Title = "Target Part",
-    Desc = "Which part to aim at",
-    Icon = "target",
-    Values = { "Head", "Hitbox", "RootPart" },
-    Default = "Head",
-    Flag = "TargetPart",
-    Callback = function(v) State.TargetPart = v end,
-})
-
-TargetSection:Space({ Columns = 1 })
-
-TargetSection:Toggle({
+aimTgt:Toggle({
     Title = "Wallcheck",
-    Desc = "Only aim when line of sight is clear",
+    Desc = "Skip targets behind cover.",
     Icon = "eye-off",
     Type = "Checkbox",
     Value = true,
-    Flag = "Wallcheck",
-    Callback = function(v) State.Wallcheck = v end,
+    Flag = "AimbotWall",
+    Callback = function(v) S.wallcheck = v end,
 })
 
--- ══════ HITBOX ══════
-local HitboxTab = CombatSection:Tab({
-    Title = "Hitbox",
-    Icon = "box",
-    IconColor = Color3.fromHex("#FF9A3C"),
-    IconShape = "Square",
+aimTgt:Space({ Columns = 1 })
+
+aimTgt:Toggle({
+    Title = "Show FOV Circle",
+    Desc = "Draws the detection radius on screen.",
+    Icon = "circle",
+    Type = "Checkbox",
+    Value = true,
+    Flag = "AimbotShowFOV",
+    Callback = function(v)
+        S.showFOV = v
+        UpdateFOV()
+    end,
 })
 
-local HitboxSection = HitboxTab:Section({ Title = "Hitbox Expander", Opened = true })
+-- // hitbox tab
+local hbSec = HBTab:Section({ Title = "Expander", Opened = true })
 
-HitboxSection:Toggle({
-    Title = "Enable Hitbox Expander",
-    Desc = "Invisible box around AI head (model stays normal)",
+hbSec:Toggle({
+    Title = "Enable Hitbox",
+    Desc = "Invisible box welded to the AI head. The head itself stays untouched.",
     Icon = "box",
     Type = "Checkbox",
     Value = false,
     Flag = "HitboxEnabled",
-    Callback = function(state)
-        State.HitboxEnabled = state
-        RefreshAllHitboxes()
-        Notify({
-            Title = state and "Hitbox ON" or "Hitbox OFF",
-            Content = state and "Expanded hitboxes applied." or "Hitboxes removed.",
-            Icon = "box",
-        })
+    Callback = function(v)
+        S.hbOn = v
+        RefreshBoxes()
+        Toast({ Title = v and "Hitbox on" or "Hitbox off", Icon = "box" })
     end,
 })
 
-HitboxSection:Space({ Columns = 1 })
+hbSec:Space({ Columns = 1 })
 
-HitboxSection:Slider({
-    Title = "Hitbox Size",
-    Desc = "Size of the invisible box (studs)",
+hbSec:Slider({
+    Title = "Box Size",
+    Desc = "Studs. Hits register on the whole box.",
     Icon = "maximize",
     Min = 2,
     Max = 20,
@@ -725,35 +639,35 @@ HitboxSection:Slider({
     Suffix = " studs",
     Flag = "HitboxSize",
     Callback = function(v)
-        State.HitboxSize = v
-        for _, box in pairs(ActiveHitboxes) do
-            box.Size = Vector3.new(v, v, v)
+        S.hbSize = v
+        for _, b in pairs(Boxes) do
+            b.Size = Vector3.new(v, v, v)
         end
     end,
 })
 
-HitboxSection:Space({ Columns = 1 })
+hbSec:Space({ Columns = 1 })
 
-HitboxSection:Toggle({
-    Title = "Visualize Hitbox",
-    Desc = "Shows the box (semi-transparent)",
+hbSec:Toggle({
+    Title = "Show Box",
+    Desc = "Reveals the invisible hitbox as a translucent shell.",
     Icon = "eye",
     Type = "Checkbox",
     Value = false,
-    Flag = "HitboxVisual",
+    Flag = "HitboxShow",
     Callback = function(v)
-        State.HitboxVisual = v
-        for _, box in pairs(ActiveHitboxes) do
-            box.Transparency = v and (1 - State.HitboxTransparency) or 1
+        S.hbVisual = v
+        for _, b in pairs(Boxes) do
+            b.Transparency = v and (1 - S.hbOpacity) or 1
         end
     end,
 })
 
-HitboxSection:Space({ Columns = 1 })
+hbSec:Space({ Columns = 1 })
 
-HitboxSection:Slider({
+hbSec:Slider({
     Title = "Box Opacity",
-    Desc = "Transparency of visual box",
+    Desc = "Only matters when Show Box is on.",
     Icon = "droplet",
     Min = 0,
     Max = 1,
@@ -761,261 +675,219 @@ HitboxSection:Slider({
     Step = 0.05,
     Flag = "HitboxOpacity",
     Callback = function(v)
-        State.HitboxTransparency = 1 - v
-        if State.HitboxVisual then
-            for _, box in pairs(ActiveHitboxes) do
-                box.Transparency = 1 - v
+        S.hbOpacity = v
+        if S.hbVisual then
+            for _, b in pairs(Boxes) do
+                b.Transparency = 1 - v
             end
         end
     end,
 })
 
--- ══════ VISUALS ══════
-local VisualsSection = Window:Section({ Title = "Visuals" })
+-- // esp tab
+local espSec = ESPTab:Section({ Title = "AI ESP", Opened = true })
 
-local ESPTab = VisualsSection:Tab({
-    Title = "AI ESP",
-    Icon = "eye",
-    IconColor = Color3.fromHex("#00CEC9"),
-    IconShape = "Square",
-})
-
-local ESPMain = ESPTab:Section({ Title = "ESP Elements", Opened = true })
-
-ESPMain:Toggle({
-    Title = "Enable AI ESP",
-    Desc = "Highlight and label all AI",
+espSec:Toggle({
+    Title = "Enable ESP",
+    Desc = "Highlights and labels every AI in the map.",
     Icon = "scan",
     Type = "Checkbox",
     Value = false,
     Flag = "ESPEnabled",
-    Callback = function(state)
-        State.ESPEnabled = state
-        RefreshAllESP()
-        Notify({
-            Title = state and "ESP ON" or "ESP OFF",
-            Content = state and "AI ESP enabled." or "AI ESP disabled.",
-            Icon = "eye",
-        })
+    Callback = function(v)
+        S.espOn = v
+        RefreshESP()
+        Toast({ Title = v and "ESP on" or "ESP off", Icon = "eye" })
     end,
 })
 
-ESPMain:Space({ Columns = 2 })
+espSec:Space({ Columns = 2 })
 
-ESPMain:Toggle({
+espSec:Toggle({
     Title = "Highlight",
-    Desc = "Colored outline through walls",
+    Desc = "Outline through walls.",
     Icon = "square",
     Type = "Checkbox",
     Value = true,
-    Flag = "ESPHighlight",
-    Callback = function(v)
-        State.ESPHighlight = v
-        RefreshAllESP()
-    end,
+    Flag = "ESPHL",
+    Callback = function(v) S.espHL = v RefreshESP() end,
 })
 
-ESPMain:Toggle({
-    Title = "Name Tag",
-    Desc = "Show AI name above head",
+espSec:Toggle({
+    Title = "Name",
+    Desc = "AI name above head.",
     Icon = "user",
     Type = "Checkbox",
     Value = true,
     Flag = "ESPName",
-    Callback = function(v)
-        State.ESPName = v
-        RefreshAllESP()
-    end,
+    Callback = function(v) S.espName = v RefreshESP() end,
 })
 
-ESPMain:Space({ Columns = 1 })
+espSec:Space({ Columns = 1 })
 
-ESPMain:Toggle({
-    Title = "Health Bar",
-    Desc = "Show health text above head",
+espSec:Toggle({
+    Title = "Health",
+    Desc = "Live HP text.",
     Icon = "heart",
     Type = "Checkbox",
     Value = true,
-    Flag = "ESPHealth",
-    Callback = function(v)
-        State.ESPHealth = v
-        RefreshAllESP()
-    end,
+    Flag = "ESPHP",
+    Callback = function(v) S.espHP = v RefreshESP() end,
 })
 
--- ESP settings
-local ESPSettings = ESPTab:Section({ Title = "ESP Settings", Opened = false })
+local espCfg = ESPTab:Section({ Title = "Style", Opened = false })
 
-ESPSettings:Slider({
-    Title = "ESP Distance",
-    Desc = "Max render distance",
+espCfg:Slider({
+    Title = "Max Distance",
+    Desc = "Hide tags beyond this range.",
     Icon = "ruler",
     Min = 50,
     Max = 1000,
     Default = 200,
     Step = 50,
     Suffix = " studs",
-    Flag = "ESPDistance",
+    Flag = "ESPDist",
     Callback = function(v)
-        State.ESPDistance = v
-        for _, data in pairs(ESPObjects) do
-            if data.billboard then data.billboard.MaxDistance = v end
+        S.espDist = v
+        for _, d in pairs(Esps) do
+            if d.bb then d.bb.MaxDistance = v end
         end
     end,
 })
 
-ESPSettings:Space({ Columns = 1 })
+espCfg:Space({ Columns = 1 })
 
-ESPSettings:Colorpicker({
-    Title = "ESP Color",
-    Desc = "Highlight and text color",
-    Default = Color3.fromRGB(255, 60, 60),
+espCfg:Colorpicker({
+    Title = "Highlight Color",
+    Desc = "Also tints the name text.",
+    Default = Color3.fromRGB(255, 70, 70),
     Transparency = 0,
     Flag = "ESPColor",
     Callback = function(c)
-        State.ESPColor = c
-        for _, data in pairs(ESPObjects) do
-            if data.highlight then data.highlight.FillColor = c end
-            if data.nameLabel then data.nameLabel.TextColor3 = c end
+        S.espColor = c
+        for _, d in pairs(Esps) do
+            if d.hl then d.hl.FillColor = c end
+            if d.name then d.name.TextColor3 = c end
         end
     end,
 })
 
--- ══════ PLAYER ══════
-local PlayerSection = Window:Section({ Title = "Player" })
+-- // perks tab
+local perkSec = PerkTab:Section({ Title = "Self", Opened = true })
 
-local PerksTab = PlayerSection:Tab({
-    Title = "Perks",
-    Icon = "star",
-    IconColor = Color3.fromHex("#A29BFE"),
-    IconShape = "Square",
-})
-
-local StaminaSection = PerksTab:Section({ Title = "Stamina", Opened = true })
-
-StaminaSection:Toggle({
+perkSec:Toggle({
     Title = "Infinite Stamina",
-    Desc = "Never exhaust (game-specific perk)",
+    Desc = "Stamina stays maxed.",
     Icon = "zap",
     Type = "Checkbox",
     Value = false,
     Flag = "InfiniteStamina",
     Callback = function(v)
-        State.InfiniteStamina = v
-        Notify({
-            Title = v and "Infinite Stamina ON" or "Infinite Stamina OFF",
-            Content = v and "Stamina will stay maxed." or "Stamina reverted to normal.",
-            Icon = "zap",
-        })
+        S.stamina = v
+        Toast({ Title = v and "Stamina locked" or "Stamina normal", Icon = "zap" })
     end,
 })
 
-PerksTab:Space({ Columns = 1 })
+perkSec:Space({ Columns = 1 })
 
-local NVGSection = PerksTab:Section({ Title = "NVG", Opened = true })
-
-NVGSection:Toggle({
+perkSec:Toggle({
     Title = "Infinite NVG",
-    Desc = "Permanent night vision (game-specific perk)",
+    Desc = "IsCloaker flag forced on.",
     Icon = "moon",
     Type = "Checkbox",
     Value = false,
     Flag = "InfiniteNVG",
     Callback = function(v)
-        State.InfiniteNVG = v
-        if LocalPlayer.Character then
-            SetupInfiniteNVG(LocalPlayer.Character)
+        S.nvg = v
+        if v and LP.Character then
+            local f = LP.Character:FindFirstChild("IsCloaker")
+            if f then f.Value = true end
         end
-        Notify({
-            Title = v and "Infinite NVG ON" or "Infinite NVG OFF",
-            Content = v and "NVG always active." or "NVG reverted.",
-            Icon = "moon",
-        })
+        Toast({ Title = v and "NVG forced on" or "NVG normal", Icon = "moon" })
     end,
 })
 
--- ══════ SETTINGS ══════
-local SettingsSection = Window:Section({ Title = "Settings" })
+-- // interface tab
+local uiGen = UITab:Section({ Title = "General", Opened = true })
 
-local ConfigTab = SettingsSection:Tab({
-    Title = "Config",
-    Icon = "settings",
-    IconColor = Color3.fromHex("#74B9FF"),
-    IconShape = "Square",
-})
-
-local KeySection = ConfigTab:Section({ Title = "Keybinds", Opened = true })
-
-KeySection:Keybind({
-    Title = "UI Toggle Key",
-    Desc = "Open/close this hub",
+uiGen:Keybind({
+    Title = "UI Toggle",
+    Desc = "Key to open/close the window.",
     Icon = "keyboard",
     Value = "RightShift",
-    Flag = "UIToggleKey",
-    Callback = function(key)
+    Flag = "UIToggle",
+    Callback = function(v)
         pcall(function()
-            Window:SetToggleKey(Enum.KeyCode[key])
+            Window:SetToggleKey(Enum.KeyCode[v])
         end)
     end,
 })
 
-ConfigTab:Space({ Columns = 1 })
+uiGen:Space({ Columns = 1 })
 
-local PerfSection = ConfigTab:Section({ Title = "Performance", Opened = false })
+uiGen:Dropdown({
+    Title = "Theme",
+    Desc = "WindUI theme.",
+    Icon = "palette",
+    Values = { "Dark", "Light", "Midnight", "Aqua", "Rose" },
+    Default = "Dark",
+    Flag = "UITheme",
+    Callback = function(v)
+        pcall(function() WindUI:SetTheme(v) end)
+    end,
+})
 
-PerfSection:Toggle({
+uiGen:Space({ Columns = 1 })
+
+uiGen:Toggle({
     Title = "Reduced Motion",
-    Desc = "Disable aim smoothing (snap instead)",
+    Desc = "Snap aim instead of smoothing. Helps on weak hardware.",
     Icon = "accessibility",
     Type = "Checkbox",
     Value = false,
-    Flag = "ReducedMotion",
-    Callback = function(v) State.ReducedMotion = v end,
+    Flag = "UIReduced",
+    Callback = function(v) S.reduced = v end,
 })
 
-PerfSection:Space({ Columns = 1 })
+uiGen:Space({ Columns = 1 })
 
-PerfSection:Toggle({
-    Title = "Disable Notifications",
-    Desc = "Hide all popups",
+uiGen:Toggle({
+    Title = "Silent Mode",
+    Desc = "Hide all notifications.",
     Icon = "bell-off",
     Type = "Checkbox",
     Value = false,
-    Flag = "DisableNotifications",
-    Callback = function(v)
-        State.NotificationsEnabled = not v
-    end,
+    Flag = "UISilent",
+    Callback = function(v) S.notif = not v end,
 })
 
-ConfigTab:Space({ Columns = 1 })
+uiGen:Space({ Columns = 1 })
 
-ConfigTab:Toggle({
-    Title = "Mobile-Friendly Mode",
-    Desc = "Larger UI for touch screens",
+uiGen:Toggle({
+    Title = "Mobile Mode",
+    Desc = "Bigger UI for touch screens.",
     Icon = "smartphone",
     Type = "Checkbox",
-    Value = State.MobileMode,
-    Flag = "MobileMode",
+    Value = S.mobile,
+    Flag = "UIMobile",
     Callback = function(v)
-        State.MobileMode = v
-        pcall(function()
-            Window:SetUIScale(v and 1.15 or 1)
-        end)
+        S.mobile = v
+        pcall(function() Window:SetUIScale(v and 1.15 or 1) end)
     end,
 })
 
-ConfigTab:Space({ Columns = 1 })
+UITab:Space({ Columns = 2 })
 
-ConfigTab:Button({
+UITab:Button({
     Title = "Unload Hub",
-    Desc = "Remove UI and disable all features",
+    Desc = "Removes the UI and stops every feature.",
     Icon = "trash-2",
-    Color = Color3.fromHex("#FF3B5C"),
+    Color = Color3.fromHex("#EF4444"),
     Callback = function()
         WindUI:Popup({
-            Title = "Unload AI Overhaul?",
+            Title = "Unload Eclipse?",
             Icon = "alert-triangle",
-            Content = "All features will be disabled and the UI removed.",
+            Content = "Every feature will stop and the window will close.",
             Buttons = {
                 {
                     Title = "Cancel",
@@ -1027,16 +899,13 @@ ConfigTab:Button({
                     Icon = "trash-2",
                     Primary = true,
                     Callback = function()
-                        -- Cleanup
-                        for _, conn in ipairs(Connections) do
-                            pcall(function() conn:Disconnect() end)
+                        for _, c in ipairs(Conns) do
+                            pcall(function() c:Disconnect() end)
                         end
-                        table.clear(Connections)
-                        ClearAllESP()
-                        for model in pairs(ActiveHitboxes) do
-                            RemoveHitbox(model)
-                        end
-                        DestroyFOVCircle()
+                        table.clear(Conns)
+                        ClearESP()
+                        for m in pairs(Boxes) do DelBox(m) end
+                        if fovGui then fovGui:Destroy() end
                         Window:Destroy()
                     end,
                 },
@@ -1045,56 +914,26 @@ ConfigTab:Button({
     end,
 })
 
--- ═══════════════════════════════════════════════════════════════
--- AIM KEYBIND HANDLER
--- ═══════════════════════════════════════════════════════════════
-Track(UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    if State.AimMode == "Hold" and input.KeyCode == Enum.KeyCode.E then
-        State.AimKeyDown = true
-    elseif State.AimMode == "Toggle" and input.KeyCode == Enum.KeyCode.E then
-        State.AimbotEnabled = not State.AimbotEnabled
-        Notify({
-            Title = State.AimbotEnabled and "Aimbot ON" or "Aimbot OFF",
-            Icon = "crosshair",
-        })
-    end
-end))
-
-Track(UserInputService.InputEnded:Connect(function(input)
-    if input.KeyCode == Enum.KeyCode.E then
-        State.AimKeyDown = false
-    end
-end))
-
--- ═══════════════════════════════════════════════════════════════
--- MOBILE SCALE
--- ═══════════════════════════════════════════════════════════════
-if State.MobileMode then
+-- // mobile scale on load
+if S.mobile then
     pcall(function() Window:SetUIScale(1.15) end)
 end
 
--- ═══════════════════════════════════════════════════════════════
--- CLEANUP ON SCRIPT DESTROY
--- ═══════════════════════════════════════════════════════════════
+-- // cleanup on destroy
 script.Destroying:Connect(function()
-    for _, conn in ipairs(Connections) do
-        pcall(function() conn:Disconnect() end)
+    for _, c in ipairs(Conns) do
+        pcall(function() c:Disconnect() end)
     end
-    table.clear(Connections)
-    ClearAllESP()
-    for model in pairs(ActiveHitboxes) do
-        RemoveHitbox(model)
-    end
-    DestroyFOVCircle()
+    table.clear(Conns)
+    ClearESP()
+    for m in pairs(Boxes) do DelBox(m) end
+    if fovGui then fovGui:Destroy() end
 end)
 
--- ═══════════════════════════════════════════════════════════════
--- STARTUP
--- ═══════════════════════════════════════════════════════════════
-Notify({
-    Title = "AI Overhaul Loaded",
-    Content = "Press RightShift to open. Aimbot targets AI only.",
-    Icon = "check-circle",
+-- // hello
+Toast({
+    Title = "Eclipse loaded",
+    Content = "Press RightShift to toggle. Examination only.",
+    Icon = "solar:check-circle-bold",
     Duration = 5,
 })
