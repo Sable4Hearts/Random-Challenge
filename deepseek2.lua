@@ -1,18 +1,25 @@
--- // eclipse - examination
--- // only works in examination (10165583746)
--- // ui: windui by footagesus
+-- // eclipse · examination
+-- // ui · windui (beta) by footagesus
+-- // built for examination only · 10165583746
 
 -- // services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
 
 local LP = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
--- // game guard
-if game.PlaceId ~= 10165583746 then
+-- // supported places · add ids here if you expand
+local SUPPORTED = {
+    [10165583746] = "Examination",
+}
+
+if not SUPPORTED[game.PlaceId] then
     pcall(function()
         LP:Kick("This game is not supported.")
     end)
@@ -24,311 +31,261 @@ local WindUI = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
 ))()
 
--- // state
+-- // shared state
+local Conns = {}
+local Flags = {}
+
 local S = {
-    -- aimbot
-    aimOn = false,
-    aimActive = false,
-    aimDown = false,
-    aimMode = "Toggle",
-    aimKeyName = "E",
-    aimFOV = 140,
-    aimSmooth = 0.22,
-    aimDist = 600,
-    aimPart = "Head",
-    wallcheck = true,
-    showFOV = true,
-
-    -- hitbox
-    hbOn = false,
-    hbSize = 6,
-    hbVisual = false,
-    hbOpacity = 0.3,
-
-    -- esp
-    espOn = false,
-    espHL = true,
-    espName = true,
-    espHP = true,
-    espDist = 200,
-    espColor = Color3.fromRGB(255, 70, 70),
-
-    -- perks
-    stamina = false,
-    nvg = false,
-
-    -- interface
+    -- shared aimbot numbers (both tabs read their own copy, this is just defaults)
     reduced = false,
-    mobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled,
+    perfMode = false,
     notif = true,
+    espRate = 0.05,   -- seconds between esp updates
 }
 
-local Conns = {}
-local Boxes = {}    -- [model] = Part
-local Esps  = {}    -- [model] = {hl, bb, name, hp}
-
-local function Track(c) table.insert(Conns, c) return c end
-
-local function Toast(t)
-    if S.notif then WindUI:Notify(t) end
+local function track(c)
+    table.insert(Conns, c)
+    return c
 end
 
--- // window
-local Window = WindUI:CreateWindow({
-    Title = "Eclipse - Examination",
-    Icon = "solar:moon-stars-bold",
-    Author = "Infinite",
-    Folder = "EclipseExamination",
-    Size = UDim2.fromOffset(490, 350),
-    MinSize = Vector2.new(440, 300),
-    MaxSize = Vector2.new(680, 480),
-    ToggleKey = Enum.KeyCode.RightShift,
-    Transparent = true,
-    Theme = "Dark",
-    Resizable = true,
-    SideBarWidth = 148,
-    HideSearchBar = true,
-    ScrollBarEnabled = false,
-    OpenButton = {
-        Title = "Eclipse",
-        CornerRadius = UDim.new(1, 0),
-        StrokeThickness = 2,
-        Enabled = true,
-        Draggable = true,
-        Color = ColorSequence.new(
-            Color3.fromHex("#7C3AED"),
-            Color3.fromHex("#22D3EE")
-        ),
-    },
-    Topbar = { Height = 38, ButtonsType = "Mac" },
-})
+local function notify(t)
+    if S.notif then
+        WindUI:Notify(t)
+    end
+end
 
-Window:Tag({
-    Title = "v1.0",
-    Icon = "zap",
-    Color = Color3.fromHex("#18181b"),
-    Border = true,
-})
+local function keyOk(name)
+    if type(name) ~= "string" then return false end
+    local ok = pcall(function() return Enum.KeyCode[name] end)
+    return ok
+end
 
--- // ai helpers
-local function GetAIs()
-    local list = {}
+-- // game settings bridge
+-- the game stores its own options as attributes on ClientSettings.
+-- changing them fires the game's own sync event, so everything here is real.
+local function csGet(path, attr, default)
+    local node = LP:FindFirstChild("ClientSettings")
+    if not node then return default end
+    for _, seg in ipairs(path) do
+        node = node:FindFirstChild(seg)
+        if not node then return default end
+    end
+    local v = node:GetAttribute(attr)
+    if v == nil then return default end
+    return v
+end
+
+local function csSet(path, attr, value)
+    local node = LP:FindFirstChild("ClientSettings")
+    if not node then return end
+    for _, seg in ipairs(path) do
+        node = node:FindFirstChild(seg)
+        if not node then return end
+    end
+    pcall(function()
+        node:SetAttribute(attr, value)
+    end)
+end
+
+-- keeps a toggle in sync if the game's own menu changes the same attribute
+local function bindSync(toggle, path, attr, default)
+    local syncing = false
+    local node = LP:FindFirstChild("ClientSettings")
+    if not node then return end
+    for _, seg in ipairs(path) do
+        node = node:FindFirstChild(seg)
+        if not node then return end
+    end
+    track(node.AttributeChanged:Connect(function(changed)
+        if changed ~= attr or syncing then return end
+        local v = node:GetAttribute(attr)
+        if v == nil then v = default end
+        syncing = true
+        pcall(function() toggle:Set(v) end)
+        syncing = false
+    end))
+end
+
+-- // target helpers
+local function isAI(model)
+    if not model or not model:IsA("Model") then return false end
+    if Players:GetPlayerFromCharacter(model) then return false end
+    return model:FindFirstChild("AI") ~= nil
+end
+
+local function humOf(model)
+    return model:FindFirstChildOfClass("Humanoid")
+end
+
+local function collectPvE()
+    local out = {}
     local folder = Workspace:FindFirstChild("Characters")
-    if not folder then return list end
+    if not folder then return out end
     for _, m in ipairs(folder:GetChildren()) do
-        if m:IsA("Model") and m:FindFirstChild("AI") then
-            local hum = m:FindFirstChildOfClass("Humanoid")
+        if isAI(m) then
+            local hum = humOf(m)
             if hum and hum.Health > 0 then
-                table.insert(list, m)
+                out[#out + 1] = { model = m, hum = hum }
             end
         end
     end
-    return list
+    return out
 end
 
-local function TargetPart(model)
-    if S.aimPart == "Hitbox" then
-        local b = model:FindFirstChild("EclipseHitbox")
-        if b then return b end
+local friendCache = {}
+local function buildFriendCache()
+    task.spawn(function()
+        local ok, pages = pcall(function() return LP:GetFriendsAsync() end)
+        if not ok or not pages then return end
+        while true do
+            local ok2, items = pcall(function() return pages:GetCurrentPage() end)
+            if not ok2 or type(items) ~= "table" then break end
+            for _, item in ipairs(items) do
+                friendCache[item.Id] = true
+            end
+            if pages.IsFinished then break end
+            if not pcall(function() pages:AdvanceToNextPageAsync() end) then break end
+        end
+    end)
+end
+buildFriendCache()
+
+local function collectPvP(teamCheck, ignoreFriends)
+    local out = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local skip = false
+            if teamCheck and p.Team ~= nil and p.Team == LP.Team then
+                skip = true
+            end
+            if not skip and ignoreFriends and friendCache[p.UserId] then
+                skip = true
+            end
+            if not skip then
+                local char = p.Character
+                local hum = char and humOf(char)
+                if char and hum and hum.Health > 0 then
+                    out[#out + 1] = { model = char, hum = hum, player = p }
+                end
+            end
+        end
     end
-    if S.aimPart == "HumanoidRootPart" then
-        local hum = model:FindFirstChildOfClass("Humanoid")
-        if hum and hum.RootPart then return hum.RootPart end
+    return out
+end
+
+local function partFor(model, kind, hum)
+    if kind == "Hitbox" then
+        local hb = model:FindFirstChild("EclipseHitbox")
+        if hb then return hb end
+    end
+    if kind == "HumanoidRootPart" then
+        return (hum and hum.RootPart) or model:FindFirstChild("HumanoidRootPart")
+    end
+    if kind == "Torso" then
+        return model:FindFirstChild("UpperTorso")
+            or model:FindFirstChild("Torso")
+            or (hum and hum.RootPart)
     end
     return model:FindFirstChild("Head")
-        or model:FindFirstChild("HumanoidRootPart")
+        or (hum and hum.RootPart)
         or model.PrimaryPart
 end
 
--- // hitbox — invisible box welded to head. head stays normal size
-local function AddBox(model)
-    if Boxes[model] then return end
-    local head = model:FindFirstChild("Head")
-    if not head then return end
-
-    local box = Instance.new("Part")
-    box.Name = "EclipseHitbox"
-    box.Size = Vector3.new(S.hbSize, S.hbSize, S.hbSize)
-    box.Transparency = S.hbVisual and (1 - S.hbOpacity) or 1
-    box.CanCollide = false
-    box.CanQuery = true
-    box.CanTouch = false
-    box.Massless = true
-    box.Anchored = false
-    box.Material = Enum.Material.ForceField
-    box.Color = Color3.fromRGB(124, 58, 237)
-    box.CFrame = head.CFrame
-
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0 = head
-    weld.Part1 = box
-    weld.Parent = box
-
-    box.Parent = model
-    Boxes[model] = box
-end
-
-local function DelBox(model)
-    local b = Boxes[model]
-    if b then b:Destroy() Boxes[model] = nil end
-end
-
-local function RefreshBoxes()
-    if S.hbOn then
-        for _, m in ipairs(GetAIs()) do AddBox(m) end
-    else
-        for m in pairs(Boxes) do DelBox(m) end
-    end
-end
-
--- // esp
-local function DelESP(model)
-    local d = Esps[model]
-    if not d then return end
-    if d.hl then d.hl:Destroy() end
-    if d.bb then d.bb:Destroy() end
-    Esps[model] = nil
-end
-
-local function ClearESP()
-    for m in pairs(Esps) do DelESP(m) end
-end
-
-local function AddESP(model)
-    if not S.espOn or Esps[model] then return end
-    local head = model:FindFirstChild("Head") or model.PrimaryPart
-    if not head then return end
-
-    local d = {}
-
-    if S.espHL then
-        local hl = Instance.new("Highlight")
-        hl.Name = "EclipseHL"
-        hl.Adornee = model
-        hl.FillColor = S.espColor
-        hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-        hl.OutlineTransparency = 1
-        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        hl.Parent = model
-        d.hl = hl
-    end
-
-    local bb = Instance.new("BillboardGui")
-    bb.Name = "EclipseBB"
-    bb.Adornee = head
-    bb.Size = UDim2.fromOffset(100, 36)
-    bb.StudsOffset = Vector3.new(0, 3.5, 0)
-    bb.AlwaysOnTop = true
-    bb.MaxDistance = S.espDist
-    bb.Parent = model
-    d.bb = bb
-
-    if S.espName then
-        local n = Instance.new("TextLabel")
-        n.Size = UDim2.new(1, 0, 0.5, 0)
-        n.BackgroundTransparency = 1
-        n.TextColor3 = S.espColor
-        n.TextStrokeTransparency = 0
-        n.TextScaled = true
-        n.Font = Enum.Font.GothamBold
-        n.Text = model.Name
-        n.Parent = bb
-        d.name = n
-    end
-
-    if S.espHP then
-        local h = Instance.new("TextLabel")
-        h.Size = UDim2.new(1, 0, 0.5, 0)
-        h.Position = UDim2.new(0, 0, 0.5, 0)
-        h.BackgroundTransparency = 1
-        h.TextColor3 = Color3.fromRGB(255, 255, 255)
-        h.TextStrokeTransparency = 0
-        h.TextScaled = true
-        h.Font = Enum.Font.Gotham
-        h.Text = "100 / 100"
-        h.Parent = bb
-        d.hp = h
-    end
-
-    Esps[model] = d
-end
-
-local function RefreshESP()
-    if not S.espOn then
-        ClearESP()
-        return
-    end
-    for _, m in ipairs(GetAIs()) do AddESP(m) end
-end
-
--- // fov circle
-local fovGui, fovCircle, fovStroke
-
-local function EnsureFOV()
-    if fovGui then return end
-    fovGui = Instance.new("ScreenGui")
-    fovGui.Name = "EclipseFOV"
-    fovGui.IgnoreGuiInset = true
-    fovGui.ResetOnSpawn = false
-    fovGui.Parent = LP:WaitForChild("PlayerGui")
-
-    fovCircle = Instance.new("Frame")
-    fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-    fovCircle.Position = UDim2.fromScale(0.5, 0.5)
-    fovCircle.BackgroundTransparency = 1
-    fovCircle.Visible = false
-    fovCircle.Parent = fovGui
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(1, 0)
-    corner.Parent = fovCircle
-
-    fovStroke = Instance.new("UIStroke")
-    fovStroke.Color = Color3.fromRGB(124, 58, 237)
-    fovStroke.Thickness = 1.5
-    fovStroke.Transparency = 0.4
-    fovStroke.Parent = fovCircle
-end
-
-local function UpdateFOV()
-    if not fovGui then return end
-    fovCircle.Size = UDim2.fromOffset(S.aimFOV * 2, S.aimFOV * 2)
-    fovCircle.Visible = S.aimOn and S.showFOV
-end
-
--- // aimbot helpers
-local function ScreenDist(pos)
-    local sp, on = Camera:WorldToViewportPoint(pos)
+local function screenDist(worldPos)
+    local sp, on = Camera:WorldToViewportPoint(worldPos)
     if not on then return math.huge end
-    local c = Camera.ViewportSize / 2
+    local c = Camera.ViewportSize * 0.5
     local dx, dy = sp.X - c.X, sp.Y - c.Y
     return math.sqrt(dx * dx + dy * dy)
 end
 
-local function LOS(from, to, ignore)
+local function visible(from, to, ignore)
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = ignore or { Camera, LP.Character }
+    params.FilterDescendantsInstances = ignore
     params.IgnoreWater = true
     local hit = Workspace:Raycast(from, to - from, params)
-    return hit == nil
+    if not hit then return true end
+    -- hits on the target itself don't count as blocked
+    for _, inst in ipairs(ignore) do
+        if typeof(inst) == "Instance" and hit.Instance:IsDescendantOf(inst) then
+            return true
+        end
+    end
+    return false
 end
 
-local function BestTarget()
-    local best, score = nil, math.huge
-    for _, m in ipairs(GetAIs()) do
-        local part = TargetPart(m)
+-- // fov ring
+local FovGui, FovRing, FovStroke
+local function ensureFov()
+    if FovGui then return end
+    FovGui = Instance.new("ScreenGui")
+    FovGui.Name = "EclipseFov"
+    FovGui.IgnoreGuiInset = true
+    FovGui.ResetOnSpawn = false
+    FovGui.Parent = LP:WaitForChild("PlayerGui")
+
+    FovRing = Instance.new("Frame")
+    FovRing.AnchorPoint = Vector2.new(0.5, 0.5)
+    FovRing.Position = UDim2.fromScale(0.5, 0.5)
+    FovRing.BackgroundTransparency = 1
+    FovRing.Visible = false
+    FovRing.Parent = FovGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = FovRing
+
+    FovStroke = Instance.new("UIStroke")
+    FovStroke.Color = Color3.fromRGB(124, 92, 255)
+    FovStroke.Thickness = 1.5
+    FovStroke.Transparency = 0.45
+    FovStroke.Parent = FovRing
+end
+
+-- // aimbot
+local Aim = {
+    pve = {
+        on = false, mode = "Toggle", key = "E", keyDown = false, toggled = false,
+        part = "Head", fov = 130, smooth = 0.22, dist = 700,
+        wall = true, predict = 0.35, showFov = true, deadzone = 0,
+    },
+    pvp = {
+        on = false, mode = "Hold", key = "Q", keyDown = false, toggled = false,
+        part = "Head", fov = 110, smooth = 0.28, dist = 450,
+        wall = true, predict = 0.4, showFov = false, deadzone = 0,
+        team = true, friends = true,
+    },
+}
+
+local function aimActive(cfg)
+    if not cfg.on then return false end
+    if cfg.mode == "Always" then return true end
+    if cfg.mode == "Hold" then return cfg.keyDown end
+    return cfg.toggled
+end
+
+local function pickTarget(list, cfg, isPvP)
+    local camPos = Camera.CFrame.Position
+    local best, bestScore = nil, math.huge
+    local ignore = { Camera, LP.Character, Workspace.Terrain }
+
+    for _, entry in ipairs(list) do
+        local part = partFor(entry.model, cfg.part, entry.hum)
         if part then
-            local dist = (Camera.CFrame.Position - part.Position).Magnitude
-            if dist <= S.aimDist then
-                local sd = ScreenDist(part.Position)
-                if sd <= S.aimFOV then
-                    if not S.wallcheck or LOS(Camera.CFrame.Position, part.Position,
-                        { Camera, LP.Character, m }) then
-                        if sd < score then
-                            score = sd
-                            best = part
-                        end
+            local dist = (camPos - part.Position).Magnitude
+            if dist <= cfg.dist then
+                local sd = screenDist(part.Position)
+                if sd <= cfg.fov and sd >= cfg.deadzone then
+                    local clear = true
+                    if cfg.wall then
+                        local ignore2 = table.clone(ignore)
+                        ignore2[#ignore2 + 1] = entry.model
+                        clear = visible(camPos, part.Position, ignore2)
+                    end
+                    if clear and sd < bestScore then
+                        bestScore = sd
+                        best = part
                     end
                 end
             end
@@ -337,47 +294,296 @@ local function BestTarget()
     return best
 end
 
--- // ai watcher (event driven, no polling)
-local function OnAI(v)
-    if not v:IsA("Model") or not v:FindFirstChild("AI") then return end
-    task.wait(0.1)
-    if not v.Parent then return end
-    if S.hbOn then AddBox(v) end
-    if S.espOn then AddESP(v) end
-    v.AncestryChanged:Connect(function()
-        if not v.Parent then
-            DelBox(v)
-            DelESP(v)
-        end
+-- // hitbox expander
+-- the real Head becomes a large invisible box so hits actually land,
+-- and a normal sized visual part is welded on top so the model still looks fine.
+local Hitboxes = {}
+
+local function saveHead(head)
+    return {
+        size = head.Size,
+        transparency = head.Transparency,
+        cancollide = head.CanCollide,
+        canquery = head.CanQuery,
+        cantouch = head.CanTouch,
+        massless = head.Massless,
+    }
+end
+
+local function restoreHead(head, saved)
+    pcall(function()
+        head.Size = saved.size
+        head.Transparency = saved.transparency
+        head.CanCollide = saved.cancollide
+        head.CanQuery = saved.canquery
+        head.CanTouch = saved.cantouch
+        head.Massless = saved.massless
     end)
 end
 
-local charsFolder = Workspace:WaitForChild("Characters", 10)
-if charsFolder then
-    for _, v in ipairs(charsFolder:GetChildren()) do
-        task.spawn(OnAI, v)
+local function applyHitbox(model, size, showShell)
+    if not model or not model.Parent then return end
+    local head = model:FindFirstChild("Head")
+    if not head or not head:IsA("BasePart") then return end
+
+    local entry = Hitboxes[model]
+
+    if not entry then
+        local saved = saveHead(head)
+
+        -- turn the real head into the big invisible hitbox
+        pcall(function()
+            head.Size = Vector3.new(size, size, size)
+            head.Transparency = 1
+            head.CanCollide = false
+            head.Massless = true
+            head.CanQuery = true
+            head.CanTouch = true
+        end)
+
+        -- normal sized visual stand in
+        local vis = Instance.new("Part")
+        vis.Name = "EclipseVisHead"
+        vis.Size = saved.size
+        vis.CFrame = head.CFrame
+        vis.Transparency = saved.transparency
+        vis.CanCollide = false
+        vis.CanQuery = false
+        vis.CanTouch = false
+        vis.Massless = true
+        vis.Anchored = false
+        vis.Material = head.Material
+        vis.Color = head.Color
+        vis.TopSurface = Enum.SurfaceType.Smooth
+        vis.BottomSurface = Enum.SurfaceType.Smooth
+
+        local weld = Instance.new("WeldConstraint")
+        weld.Part0 = head
+        weld.Part1 = vis
+        weld.Parent = vis
+
+        vis.Parent = model
+
+        -- optional shell so you can see the real hitbox
+        local shell = Instance.new("Part")
+        shell.Name = "EclipseShell"
+        shell.Size = Vector3.new(size, size, size)
+        shell.CFrame = head.CFrame
+        shell.Transparency = 0.72
+        shell.CanCollide = false
+        shell.CanQuery = false
+        shell.CanTouch = false
+        shell.Massless = true
+        shell.Anchored = false
+        shell.Material = Enum.Material.ForceField
+        shell.Color = Color3.fromRGB(124, 92, 255)
+        shell.Visible = showShell
+
+        local weld2 = Instance.new("WeldConstraint")
+        weld2.Part0 = head
+        weld2.Part1 = shell
+        weld2.Parent = shell
+
+        shell.Parent = model
+
+        Hitboxes[model] = {
+            head = head,
+            saved = saved,
+            vis = vis,
+            shell = shell,
+        }
+    else
+        -- live resize
+        pcall(function()
+            entry.head.Size = Vector3.new(size, size, size)
+            entry.shell.Size = Vector3.new(size, size, size)
+            entry.shell.Visible = showShell
+        end)
     end
-    Track(charsFolder.ChildAdded:Connect(OnAI))
 end
 
--- // character setup (stamina + nvg)
-local function SetupChar(char)
-    -- nvg via IsCloaker flag
-    local flag = char:FindFirstChild("IsCloaker")
-    if not flag then
-        flag = Instance.new("BoolValue")
-        flag.Name = "IsCloaker"
-        flag.Parent = char
+local function removeHitbox(model)
+    local entry = Hitboxes[model]
+    if not entry then return end
+    if entry.head and entry.head.Parent then
+        restoreHead(entry.head, entry.saved)
     end
-    if S.nvg then flag.Value = true end
-    Track(flag.Changed:Connect(function()
-        if S.nvg and not flag.Value then flag.Value = true end
-    end))
+    if entry.vis then entry.vis:Destroy() end
+    if entry.shell then entry.shell:Destroy() end
+    Hitboxes[model] = nil
+end
 
-    -- stamina via ClientHandler.State
+local function clearHitboxes()
+    for model in pairs(Hitboxes) do
+        removeHitbox(model)
+    end
+end
+
+-- // esp
+local Esp = {
+    pve = { on = false, highlight = true, name = true, hp = true, dist = true, distMax = 250, color = Color3.fromRGB(255, 72, 72), team = true, friends = true },
+    pvp = { on = false, highlight = true, name = true, hp = true, dist = true, distMax = 500, color = Color3.fromRGB(80, 200, 255), team = true, friends = true },
+}
+
+local EspGui
+local EspObjects = {}
+
+local function ensureEspGui()
+    if EspGui then return end
+    EspGui = Instance.new("ScreenGui")
+    EspGui.Name = "EclipseEsp"
+    EspGui.IgnoreGuiInset = true
+    EspGui.ResetOnSpawn = false
+    EspGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    EspGui.Parent = LP:WaitForChild("PlayerGui")
+end
+
+local function clearEspObject(model)
+    local o = EspObjects[model]
+    if not o then return end
+    if o.hl then o.hl:Destroy() end
+    if o.bb then o.bb:Destroy() end
+    EspObjects[model] = nil
+end
+
+local function clearAllEsp()
+    for model in pairs(EspObjects) do
+        clearEspObject(model)
+    end
+end
+
+local function makeEsp(model, cfg)
+    if EspObjects[model] then return end
+    local head = model:FindFirstChild("Head") or model.PrimaryPart
+    if not head then return end
+
+    local o = {}
+
+    if cfg.highlight then
+        local hl = Instance.new("Highlight")
+        hl.Name = "EclipseHL"
+        hl.Adornee = model
+        hl.FillColor = cfg.color
+        hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+        hl.FillTransparency = 0.6
+        hl.OutlineTransparency = 1
+        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        hl.Parent = model
+        o.hl = hl
+    end
+
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "EclipseBB"
+    bb.Adornee = head
+    bb.Size = UDim2.fromOffset(140, 44)
+    bb.StudsOffset = Vector3.new(0, 3.2, 0)
+    bb.AlwaysOnTop = true
+    bb.MaxDistance = cfg.distMax
+    bb.Parent = model
+    o.bb = bb
+
+    if cfg.name then
+        local name = Instance.new("TextLabel")
+        name.Name = "TagName"
+        name.Size = UDim2.new(1, 0, 0.5, 0)
+        name.BackgroundTransparency = 1
+        name.TextColor3 = cfg.color
+        name.TextStrokeTransparency = 0
+        name.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        name.TextScaled = true
+        name.Font = Enum.Font.GothamBold
+        name.Text = model.Name
+        name.Parent = bb
+        o.name = name
+    end
+
+    if cfg.hp then
+        local hp = Instance.new("TextLabel")
+        hp.Name = "TagHp"
+        hp.Size = UDim2.new(1, 0, 0.5, 0)
+        hp.Position = UDim2.new(0, 0, 0.5, 0)
+        hp.BackgroundTransparency = 1
+        hp.TextColor3 = Color3.fromRGB(255, 255, 255)
+        hp.TextStrokeTransparency = 0
+        hp.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        hp.TextScaled = true
+        hp.Font = Enum.Font.Gotham
+        hp.Text = "100"
+        hp.Parent = bb
+        o.hp = hp
+    end
+
+    if cfg.dist then
+        local d = Instance.new("TextLabel")
+        d.Name = "TagDist"
+        d.Size = UDim2.new(1, 0, 0, 14)
+        d.Position = UDim2.new(0, 0, 1, 2)
+        d.BackgroundTransparency = 1
+        d.TextColor3 = Color3.fromRGB(210, 210, 210)
+        d.TextStrokeTransparency = 0.4
+        d.TextScaled = true
+        d.Font = Enum.Font.Gotham
+        d.Text = "0m"
+        d.Parent = bb
+        o.dist = d
+    end
+
+    EspObjects[model] = o
+end
+
+local function refreshEsp(kind)
+    local cfg = Esp[kind]
+    if not cfg.on then
+        clearAllEsp()
+        return
+    end
+
+    local list = kind == "pve" and collectPvE() or collectPvP(cfg.team, cfg.friends)
+    local seen = {}
+
+    for _, entry in ipairs(list) do
+        seen[entry.model] = true
+        makeEsp(entry.model, cfg)
+        local o = EspObjects[entry.model]
+        if o then
+            if o.hl then
+                o.hl.FillColor = cfg.color
+                o.hl.Enabled = cfg.highlight
+            end
+            if o.bb then
+                o.bb.MaxDistance = cfg.distMax
+            end
+            if o.name then
+                o.name.TextColor3 = cfg.color
+                o.name.Text = entry.player and entry.player.DisplayName or entry.model.Name
+                o.name.Visible = cfg.name
+            end
+            if o.hp then o.hp.Visible = cfg.hp end
+            if o.dist then o.dist.Visible = cfg.dist end
+        end
+    end
+
+    for model in pairs(EspObjects) do
+        if not seen[model] or not model.Parent then
+            clearEspObject(model)
+        end
+    end
+end
+
+-- // infinite stamina
+local Stamina = {
+    on = false,
+    module = nil,
+    char = nil,
+}
+
+local function bindStamina(char)
+    Stamina.module = nil
+    Stamina.char = char
+
     task.spawn(function()
         local handler
-        for _ = 1, 50 do
+        for _ = 1, 40 do
             handler = char:FindFirstChild("ClientHandler")
                 or char:FindFirstChild("Client")
                 or char:FindFirstChild("ClientOLD")
@@ -386,554 +592,1930 @@ local function SetupChar(char)
         end
         if not handler then return end
 
-        local ok, State = pcall(require, handler:WaitForChild("State", 4))
-        if not ok or not State or not State.stamina then return end
+        local stateFolder = handler:WaitForChild("State", 5)
+        if not stateFolder then return end
 
-        Track(RunService.Heartbeat:Connect(function()
-            if not S.stamina then return end
-            State.stamina.current = 200
-            State.stamina.regenDelay = 0
-            State.stamina.fullRegen = false
-            State.stamina.active = false
-            if State.stamina.exhausted ~= nil then
-                State.stamina.exhausted = false
-            end
-        end))
+        local ok, mod = pcall(require, stateFolder)
+        if not ok or type(mod) ~= "table" or not mod.stamina then return end
+        if Stamina.char == char then
+            Stamina.module = mod
+        end
     end)
 end
 
-if LP.Character then task.spawn(SetupChar, LP.Character) end
-Track(LP.CharacterAdded:Connect(function(c) task.spawn(SetupChar, c) end))
+-- // infinite nvg
+local Nvg = { on = false }
 
--- // single main loop (aimbot + throttled esp)
+local function bindNvg(char)
+    local flag = char:FindFirstChild("IsCloaker")
+    if not flag then
+        flag = Instance.new("BoolValue")
+        flag.Name = "IsCloaker"
+        flag.Parent = char
+    end
+
+    if Nvg.on then flag.Value = true end
+
+    track(flag.Changed:Connect(function()
+        if Nvg.on and flag.Value ~= true then
+            flag.Value = true
+        end
+    end))
+
+    track(char.ChildAdded:Connect(function(child)
+        if Nvg.on and child.Name == "IsCloaker" and child:IsA("BoolValue") then
+            child.Value = true
+        end
+    end))
+end
+
+-- // character hookup
+local function onCharacter(char)
+    bindStamina(char)
+    bindNvg(char)
+    if Move.speedOn then
+        local hum = char:WaitForChild("Humanoid", 5)
+        if hum then hum.WalkSpeed = Move.speed end
+    end
+end
+
+track(LP.CharacterAdded:Connect(onCharacter))
+if LP.Character then
+    task.spawn(onCharacter, LP.Character)
+end
+
+-- // movement state (declared before onCharacter uses it)
+Move = Move or {}
+
+-- // ai watcher (event driven, no polling)
+local function onCharacterFolderChild(v)
+    if not isAI(v) then return end
+    task.wait(0.08)
+    if not v.Parent then return end
+    v.AncestryChanged:Connect(function()
+        if not v.Parent then
+            removeHitbox(v)
+            clearEspObject(v)
+        end
+    end)
+end
+
+local charsFolder = Workspace:WaitForChild("Characters", 10)
+if charsFolder then
+    for _, v in ipairs(charsFolder:GetChildren()) do
+        task.spawn(onCharacterFolderChild, v)
+    end
+    track(charsFolder.ChildAdded:Connect(onCharacterFolderChild))
+end
+
+-- // world
+local World = {
+    timeOn = false,
+    time = 14,
+    fogOff = false,
+    fogPrev = nil,
+    ambientOn = false,
+    ambient = Color3.fromRGB(70, 70, 80),
+    ambientPrev = nil,
+}
+
+-- // input
+track(UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    local name = input.KeyCode.Name
+
+    if name == Aim.pve.key then
+        if Aim.pve.mode == "Hold" then
+            Aim.pve.keyDown = true
+        elseif Aim.pve.mode == "Toggle" then
+            Aim.pve.toggled = not Aim.pve.toggled
+        end
+    end
+
+    if name == Aim.pvp.key then
+        if Aim.pvp.mode == "Hold" then
+            Aim.pvp.keyDown = true
+        elseif Aim.pvp.mode == "Toggle" then
+            Aim.pvp.toggled = not Aim.pvp.toggled
+        end
+    end
+end))
+
+track(UserInputService.InputEnded:Connect(function(input)
+    local name = input.KeyCode.Name
+    if name == Aim.pve.key then Aim.pve.keyDown = false end
+    if name == Aim.pvp.key then Aim.pvp.keyDown = false end
+end))
+
+-- // single render loop
+-- everything visual runs through here. aimbot every frame, the rest throttled.
 local espAccum = 0
-Track(RunService.Heartbeat:Connect(function(dt)
-    -- aimbot
-    if S.aimOn then
-        local should = (S.aimMode == "Always")
-            or (S.aimMode == "Hold" and S.aimDown)
-            or (S.aimMode == "Toggle" and S.aimActive)
-        if should then
-            local t = BestTarget()
-            if t then
-                local goal = CFrame.lookAt(Camera.CFrame.Position, t.Position)
-                if S.reduced then
-                    Camera.CFrame = goal
-                else
-                    local a = math.clamp(S.aimSmooth * dt * 60, 0, 1)
-                    Camera.CFrame = Camera.CFrame:Lerp(goal, a)
-                end
+local staminaAccum = 0
+local hitboxAccum = 0
+
+track(RunService.RenderStepped:Connect(function(dt)
+    -- aimbot pve
+    if Aim.pve.on and aimActive(Aim.pve) then
+        local list = collectPvE()
+        local part = pickTarget(list, Aim.pve, false)
+        if part then
+            local goal = CFrame.lookAt(Camera.CFrame.Position, part.Position)
+            if S.reduced then
+                Camera.CFrame = goal
+            else
+                local a = math.clamp(Aim.pve.smooth * dt * 60, 0, 1)
+                Camera.CFrame = Camera.CFrame:Lerp(goal, a)
             end
         end
     end
 
-    -- esp hp refresh (throttled to ~8hz)
-    if S.espOn then
+    -- aimbot pvp
+    if Aim.pvp.on and aimActive(Aim.pvp) then
+        local list = collectPvP(Aim.pvp.team, Aim.pvp.friends)
+        local part = pickTarget(list, Aim.pvp, true)
+        if part then
+            local goal = CFrame.lookAt(Camera.CFrame.Position, part.Position)
+            if S.reduced then
+                Camera.CFrame = goal
+            else
+                local a = math.clamp(Aim.pvp.smooth * dt * 60, 0, 1)
+                Camera.CFrame = Camera.CFrame:Lerp(goal, a)
+            end
+        end
+    end
+
+    -- esp refresh
+    if Esp.pve.on or Esp.pvp.on then
         espAccum = espAccum + dt
-        if espAccum >= 0.12 then
+        if espAccum >= S.espRate then
             espAccum = 0
-            for m, d in pairs(Esps) do
-                if not m.Parent then
-                    DelESP(m)
-                elseif d.hp then
-                    local hum = m:FindFirstChildOfClass("Humanoid")
-                    if hum then
-                        d.hp.Text = math.floor(hum.Health) .. " / " .. math.floor(hum.MaxHealth)
+
+            if Esp.pve.on then
+                for model, o in pairs(EspObjects) do
+                    if not model.Parent then
+                        clearEspObject(model)
+                    elseif isAI(model) then
+                        local hum = humOf(model)
+                        if o.hp and hum then
+                            o.hp.Text = math.floor(hum.Health) .. ""
+                        end
+                        if o.dist then
+                            o.dist.Text = math.floor((Camera.CFrame.Position - model:GetPivot().Position).Magnitude) .. "m"
+                        end
+                    end
+                end
+                refreshEsp("pve")
+            end
+
+            if Esp.pvp.on then
+                refreshEsp("pvp")
+                for model, o in pairs(EspObjects) do
+                    if model.Parent and not isAI(model) then
+                        local hum = humOf(model)
+                        if o.hp and hum then
+                            o.hp.Text = math.floor(hum.Health) .. ""
+                        end
+                        if o.dist then
+                            o.dist.Text = math.floor((Camera.CFrame.Position - model:GetPivot().Position).Magnitude) .. "m"
+                        end
                     end
                 end
             end
         end
     end
-end))
 
--- // aim key
-Track(UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if input.KeyCode == Enum.KeyCode[S.aimKeyName or "E"] then
-        if S.aimMode == "Hold" then
-            S.aimDown = true
-        elseif S.aimMode == "Toggle" then
-            S.aimActive = not S.aimActive
+    -- stamina reset
+    if Stamina.on and Stamina.module then
+        staminaAccum = staminaAccum + dt
+        if staminaAccum >= 0.05 then
+            staminaAccum = 0
+            local st = Stamina.module.stamina
+            if st then
+                st.current = 200
+                st.regenDelay = 0
+                st.fullRegen = false
+                st.active = false
+                if st.exhausted ~= nil then
+                    st.exhausted = false
+                end
+            end
+        end
+    end
+
+    -- hitbox health check, keeps things tidy without spamming
+    if HitboxPvE.on or HitboxPvP.on then
+        hitboxAccum = hitboxAccum + dt
+        if hitboxAccum >= 0.5 then
+            hitboxAccum = 0
+            for model, entry in pairs(Hitboxes) do
+                if not model.Parent or not entry.head.Parent then
+                    removeHitbox(model)
+                end
+            end
         end
     end
 end))
 
-Track(UserInputService.InputEnded:Connect(function(input)
-    if input.KeyCode == Enum.KeyCode[S.aimKeyName or "E"] then
-        S.aimDown = false
+-- // world loop, slow and separate so it never touches the main budget
+local worldAccum = 0
+track(RunService.Heartbeat:Connect(function(dt)
+    if not (World.timeOn or World.fogOff or World.ambientOn) then return end
+    worldAccum = worldAccum + dt
+    if worldAccum < 0.4 then return end
+    worldAccum = 0
+
+    if World.timeOn then
+        pcall(function() Lighting.ClockTime = World.time end)
+    end
+    if World.fogOff then
+        pcall(function()
+            Lighting.FogEnd = 1e6
+            Lighting.FogStart = 1e6
+        end)
+    end
+    if World.ambientOn then
+        pcall(function() Lighting.Ambient = World.ambient end)
     end
 end))
 
--- // sidebar
-Window:Section({ Title = "Combat", Opened = true })
-local AimTab = Window:Tab({ Title = "Aimbot", Icon = "crosshair" })
-local HBTab  = Window:Tab({ Title = "Hitbox", Icon = "box" })
+-- // window
+local Window = WindUI:CreateWindow({
+    Title = "Eclipse",
+    Author = "by MNDEV",
+    Icon = "moon-star",
+    Folder = "EclipseMNDEV",
+    Theme = "Midnight",
 
-Window:Section({ Title = "Visuals", Opened = true })
-local ESPTab = Window:Tab({ Title = "ESP", Icon = "eye" })
+    Size = UDim2.fromOffset(80, 80),
+    MinSize = Vector2.new(540, 390),
+    MaxSize = Vector2.new(880, 600),
 
-Window:Section({ Title = "Player", Opened = true })
-local PerkTab = Window:Tab({ Title = "Perks", Icon = "star" })
+    AutoScale = false,
+    NewElements = true,
+    Resizable = true,
+    Transparent = true,
+    SideBarWidth = 190,
+    HideSearchBar = true,
+    ScrollBarEnabled = false,
+    ToggleKey = Enum.KeyCode.RightShift,
 
-Window:Section({ Title = "Interface", Opened = true })
-local UITab = Window:Tab({ Title = "Interface", Icon = "settings" })
+    Topbar = {
+        Height = 48,
+        ButtonsType = "Default",
+    },
 
--- // aimbot tab
-local aimCtl = AimTab:Section({ Title = "Controls", Opened = true })
+    OpenButton = {
+        Title = "Eclipse",
+        Icon = "moon-star",
+        CornerRadius = UDim.new(1, 0),
+        StrokeThickness = 2,
+        Enabled = true,
+        Draggable = true,
+        Color = ColorSequence.new(
+            Color3.fromHex("#7C5CFF"),
+            Color3.fromHex("#22D3EE")
+        ),
+    },
 
-aimCtl:Toggle({
-    Title = "Enable Aimbot",
-    Desc = "Locks onto the closest AI in range.",
-    Icon = "zap",
+    User = {
+        Enabled = false,
+        Anonymous = false,
+    },
+})
+
+Window:Tag({
+    Title = "v1.0",
+    Icon = "github",
+    Color = Color3.fromHex("#18181b"),
+    Border = true,
+})
+
+-- // notifier
+notify({
+    Title = "Eclipse loaded",
+    Content = "Right Shift toggles the window.",
+    Icon = "solar:check-circle-bold",
+    Duration = 4,
+})
+
+-- =====================================================================
+-- HOME
+-- =====================================================================
+Window:Section({ Title = "Home", Opened = true })
+
+-- // credits
+local CreditsTab = Window:Tab({ Title = "Credits", Icon = "book" })
+
+local bannerSection = CreditsTab:Section({ Title = "About Eclipse", Opened = true })
+
+bannerSection:Image({
+    Image = "rbxassetid://95176729901641",
+    AspectRatio = "16:9",
+    Radius = 9,
+})
+
+bannerSection:Divider()
+
+bannerSection:Paragraph({
+    Title = "Eclipse",
+    Desc = "A quiet little toolkit built for Examination. Nothing flashy, just things that work.",
+})
+
+bannerSection:Paragraph({
+    Title = "Version 1.0",
+    Desc = "First public build. Everything here is client side and reversible.",
+})
+
+local teamSection = CreditsTab:Section({ Title = "Team", Opened = true })
+
+teamSection:Paragraph({
+    Title = "MNDEV",
+    Desc = "Lead developer. Wrote the whole thing.",
+    Buttons = {
+        {
+            Icon = "youtube",
+            Title = "Channel",
+            Callback = function()
+                local ok = pcall(function()
+                    setclipboard("https://youtube.com/@infinitemndev?si=rpm1GtXg6T4L_qCs")
+                end)
+                notify({
+                    Title = ok and "Copied" or "Copy failed",
+                    Content = ok and "YouTube link is on your clipboard." or "Clipboard is unavailable.",
+                    Icon = "solar:link-bold",
+                })
+            end,
+        },
+    },
+})
+
+teamSection:Paragraph({
+    Title = "Contributors",
+    Desc = "Everyone who tested, broke things, and reported them back.",
+})
+
+local socialSection = CreditsTab:Section({ Title = "Socials", Opened = true })
+
+socialSection:Button({
+    Title = "YouTube",
+    Desc = "Copy the channel link.",
+    Icon = "youtube",
+    Justify = "Between",
+    Callback = function()
+        local ok = pcall(function()
+            setclipboard("https://youtube.com/@infinitemndev?si=rpm1GtXg6T4L_qCs")
+        end)
+        notify({
+            Title = ok and "YouTube copied" or "Copy failed",
+            Content = ok and "Paste it anywhere you like." or "Your executor blocked clipboard access.",
+            Icon = "solar:link-bold",
+        })
+    end,
+})
+
+socialSection:Button({
+    Title = "Discord",
+    Desc = "Copy the server invite.",
+    Icon = "message-circle",
+    Justify = "Between",
+    Callback = function()
+        local ok = pcall(function()
+            setclipboard("https://discord.gg/E4rWJVFqhA")
+        end)
+        notify({
+            Title = ok and "Discord copied" or "Copy failed",
+            Content = ok and "Invite is on your clipboard." or "Your executor blocked clipboard access.",
+            Icon = "solar:link-bold",
+        })
+    end,
+})
+
+socialSection:Space({ Columns = 1 })
+
+socialSection:Button({
+    Title = "Copy both links",
+    Desc = "Grabs the channel and the invite in one go.",
+    Icon = "clipboard-copy",
+    Callback = function()
+        local ok = pcall(function()
+            setclipboard(
+                "YouTube: https://youtube.com/@infinitemndev?si=rpm1GtXg6T4L_qCs\n" ..
+                "Discord: https://discord.gg/E4rWJVFqhA"
+            )
+        end)
+        notify({
+            Title = ok and "Copied" or "Copy failed",
+            Content = ok and "Both links copied." or "Your executor blocked clipboard access.",
+            Icon = "solar:clipboard-bold",
+        })
+    end,
+})
+
+local notesSection = CreditsTab:Section({ Title = "Notes", Opened = false })
+
+notesSection:Paragraph({
+    Title = "Reversibility",
+    Desc = "Every toggle here undoes itself when you turn it off. Close the hub and your game goes back to normal.",
+})
+
+notesSection:Paragraph({
+    Title = "Scope",
+    Desc = "Eclipse only runs in Examination. If you load it somewhere else it will simply close.",
+})
+
+-- // settings
+local SettingsTab = Window:Tab({ Title = "Settings", Icon = "sliders-horizontal" })
+
+local themeSection = SettingsTab:Section({ Title = "Appearance", Opened = true })
+
+themeSection:Dropdown({
+    Title = "Theme",
+    Desc = "WindUI ships a handful of palettes. Pick whichever you like.",
+    Values = { "Midnight", "Dark", "Light", "Aqua", "Rose" },
+    Value = "Midnight",
+    AllowNone = false,
+    Callback = function(option)
+        local ok = pcall(function()
+            WindUI:SetTheme(option)
+        end)
+        notify({
+            Title = ok and "Theme changed" or "Theme failed",
+            Content = ok and ("Now using " .. tostring(option) .. ".") or "That theme is not available.",
+            Icon = "solar:palette-bold",
+        })
+    end,
+})
+
+themeSection:Space({ Columns = 1 })
+
+themeSection:Toggle({
+    Title = "Reduced motion",
+    Desc = "Snaps the aimbot instead of sliding it. Also shortens transitions.",
+    Icon = "accessibility",
     Type = "Checkbox",
     Value = false,
-    Flag = "AimbotEnabled",
-    Callback = function(v)
-        S.aimOn = v
-        S.aimActive = false
-        EnsureFOV()
-        UpdateFOV()
-        Toast({ Title = v and "Aimbot on" or "Aimbot off", Icon = "crosshair" })
-    end,
+    Callback = function(v) S.reduced = v end,
 })
 
-aimCtl:Space({ Columns = 1 })
+local perfSection = SettingsTab:Section({ Title = "Performance", Opened = true })
 
-aimCtl:Dropdown({
-    Title = "Activation",
-    Desc = "How the aimbot engages.",
-    Icon = "mouse-pointer",
-    Values = { "Always", "Hold", "Toggle" },
-    Default = "Toggle",
-    Flag = "AimbotMode",
-    Callback = function(v)
-        S.aimMode = v
-        S.aimActive = false
-    end,
-})
-
-aimCtl:Space({ Columns = 1 })
-
-aimCtl:Keybind({
-    Title = "Aim Key",
-    Desc = "Used in Hold/Toggle modes. Ignored when Always.",
-    Icon = "keyboard",
-    Value = "E",
-    Flag = "AimbotKey",
-    Callback = function(v) S.aimKeyName = v end,
-})
-
-local aimTgt = AimTab:Section({ Title = "Targeting", Opened = true })
-
-aimTgt:Dropdown({
-    Title = "Target Part",
-    Desc = "Which bone to aim at.",
-    Icon = "target",
-    Values = { "Head", "Hitbox", "HumanoidRootPart" },
-    Default = "Head",
-    Flag = "AimbotPart",
-    Callback = function(v) S.aimPart = v end,
-})
-
-aimTgt:Space({ Columns = 1 })
-
-aimTgt:Slider({
-    Title = "FOV",
-    Desc = "Screen-space radius for detection.",
-    Icon = "circle-dot",
-    Min = 20,
-    Max = 600,
-    Default = 140,
-    Step = 5,
-    Suffix = "px",
-    Flag = "AimbotFOV",
-    Callback = function(v)
-        S.aimFOV = v
-        UpdateFOV()
-    end,
-})
-
-aimTgt:Space({ Columns = 1 })
-
-aimTgt:Slider({
-    Title = "Smoothness",
-    Desc = "Lower = snappier. Higher = smoother.",
-    Icon = "activity",
-    Min = 0.02,
-    Max = 1,
-    Default = 0.22,
-    Step = 0.02,
-    Flag = "AimbotSmooth",
-    Callback = function(v) S.aimSmooth = v end,
-})
-
-aimTgt:Space({ Columns = 1 })
-
-aimTgt:Slider({
-    Title = "Max Distance",
-    Desc = "Studs.",
-    Icon = "ruler",
-    Min = 50,
-    Max = 2000,
-    Default = 600,
-    Step = 50,
-    Suffix = " studs",
-    Flag = "AimbotDist",
-    Callback = function(v) S.aimDist = v end,
-})
-
-aimTgt:Space({ Columns = 1 })
-
-aimTgt:Toggle({
-    Title = "Wallcheck",
-    Desc = "Skip targets behind cover.",
-    Icon = "eye-off",
-    Type = "Checkbox",
-    Value = true,
-    Flag = "AimbotWall",
-    Callback = function(v) S.wallcheck = v end,
-})
-
-aimTgt:Space({ Columns = 1 })
-
-aimTgt:Toggle({
-    Title = "Show FOV Circle",
-    Desc = "Draws the detection radius on screen.",
-    Icon = "circle",
-    Type = "Checkbox",
-    Value = true,
-    Flag = "AimbotShowFOV",
-    Callback = function(v)
-        S.showFOV = v
-        UpdateFOV()
-    end,
-})
-
--- // hitbox tab
-local hbSec = HBTab:Section({ Title = "Expander", Opened = true })
-
-hbSec:Toggle({
-    Title = "Enable Hitbox",
-    Desc = "Invisible box welded to the AI head. The head itself stays untouched.",
-    Icon = "box",
-    Type = "Checkbox",
-    Value = false,
-    Flag = "HitboxEnabled",
-    Callback = function(v)
-        S.hbOn = v
-        RefreshBoxes()
-        Toast({ Title = v and "Hitbox on" or "Hitbox off", Icon = "box" })
-    end,
-})
-
-hbSec:Space({ Columns = 1 })
-
-hbSec:Slider({
-    Title = "Box Size",
-    Desc = "Studs. Hits register on the whole box.",
-    Icon = "maximize",
-    Min = 2,
-    Max = 20,
-    Default = 6,
-    Step = 0.5,
-    Suffix = " studs",
-    Flag = "HitboxSize",
-    Callback = function(v)
-        S.hbSize = v
-        for _, b in pairs(Boxes) do
-            b.Size = Vector3.new(v, v, v)
+perfSection:Dropdown({
+    Title = "ESP update rate",
+    Desc = "How often tags refresh. Lower is lighter.",
+    Values = { "Smooth (20/s)", "Balanced (10/s)", "Light (5/s)" },
+    Value = "Smooth (20/s)",
+    AllowNone = false,
+    Callback = function(option)
+        if option == "Smooth (20/s)" then
+            S.espRate = 0.05
+        elseif option == "Balanced (10/s)" then
+            S.espRate = 0.10
+        else
+            S.espRate = 0.20
         end
     end,
 })
 
-hbSec:Space({ Columns = 1 })
+perfSection:Space({ Columns = 1 })
 
-hbSec:Toggle({
-    Title = "Show Box",
-    Desc = "Reveals the invisible hitbox as a translucent shell.",
-    Icon = "eye",
+perfSection:Toggle({
+    Title = "Performance mode",
+    Desc = "Drops ESP to 4 updates a second and disables highlight fills.",
+    Icon = "gauge",
     Type = "Checkbox",
     Value = false,
-    Flag = "HitboxShow",
     Callback = function(v)
-        S.hbVisual = v
-        for _, b in pairs(Boxes) do
-            b.Transparency = v and (1 - S.hbOpacity) or 1
+        S.perfMode = v
+        if v then
+            S.espRate = 0.25
+        else
+            S.espRate = 0.05
         end
     end,
 })
 
-hbSec:Space({ Columns = 1 })
+local uiSection = SettingsTab:Section({ Title = "Interface", Opened = true })
 
-hbSec:Slider({
-    Title = "Box Opacity",
-    Desc = "Only matters when Show Box is on.",
-    Icon = "droplet",
-    Min = 0,
-    Max = 1,
-    Default = 0.3,
-    Step = 0.05,
-    Flag = "HitboxOpacity",
+uiSection:Keybind({
+    Title = "Window key",
+    Desc = "Opens and closes the hub.",
+    Value = "RightShift",
     Callback = function(v)
-        S.hbOpacity = v
-        if S.hbVisual then
-            for _, b in pairs(Boxes) do
-                b.Transparency = 1 - v
+        if keyOk(v) then
+            pcall(function()
+                Window:SetToggleKey(Enum.KeyCode[v])
+            end)
+        end
+    end,
+})
+
+uiSection:Space({ Columns = 1 })
+
+uiSection:Toggle({
+    Title = "Notifications",
+    Desc = "Little popups whenever something changes.",
+    Icon = "bell",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v) S.notif = v end,
+})
+
+uiSection:Space({ Columns = 2 })
+
+uiSection:Button({
+    Title = "Reset everything",
+    Desc = "Turns off every feature and restores defaults.",
+    Icon = "rotate-ccw",
+    Justify = "Between",
+    Callback = function()
+        for _, fn in ipairs(ResetQueue) do
+            pcall(fn)
+        end
+        notify({
+            Title = "Reset",
+            Content = "All features are back to default.",
+            Icon = "solar:refresh-bold",
+        })
+    end,
+})
+
+-- =====================================================================
+-- MOVEMENT
+-- =====================================================================
+Window:Section({ Title = "Movement", Opened = true })
+
+-- // player
+local PlayerTab = Window:Tab({ Title = "Player", Icon = "person-standing" })
+
+local noclipSection = PlayerTab:Section({ Title = "Collision", Opened = true })
+
+noclipSection:Toggle({
+    Title = "Noclip",
+    Desc = "Walk through anything. Turns itself back on after each respawn.",
+    Icon = "ghost",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        Move.noclip = v
+        if not v then
+            local char = LP.Character
+            if char then
+                for _, d in ipairs(char:GetDescendants()) do
+                    if d:IsA("BasePart") then
+                        pcall(function() d.CanCollide = true end)
+                    end
+                end
             end
         end
     end,
 })
 
--- // esp tab
-local espSec = ESPTab:Section({ Title = "AI ESP", Opened = true })
+local speedSection = PlayerTab:Section({ Title = "Speed", Opened = true })
 
-espSec:Toggle({
-    Title = "Enable ESP",
-    Desc = "Highlights and labels every AI in the map.",
-    Icon = "scan",
-    Type = "Checkbox",
-    Value = false,
-    Flag = "ESPEnabled",
-    Callback = function(v)
-        S.espOn = v
-        RefreshESP()
-        Toast({ Title = v and "ESP on" or "ESP off", Icon = "eye" })
-    end,
-})
-
-espSec:Space({ Columns = 2 })
-
-espSec:Toggle({
-    Title = "Highlight",
-    Desc = "Outline through walls.",
-    Icon = "square",
-    Type = "Checkbox",
-    Value = true,
-    Flag = "ESPHL",
-    Callback = function(v) S.espHL = v RefreshESP() end,
-})
-
-espSec:Toggle({
-    Title = "Name",
-    Desc = "AI name above head.",
-    Icon = "user",
-    Type = "Checkbox",
-    Value = true,
-    Flag = "ESPName",
-    Callback = function(v) S.espName = v RefreshESP() end,
-})
-
-espSec:Space({ Columns = 1 })
-
-espSec:Toggle({
-    Title = "Health",
-    Desc = "Live HP text.",
-    Icon = "heart",
-    Type = "Checkbox",
-    Value = true,
-    Flag = "ESPHP",
-    Callback = function(v) S.espHP = v RefreshESP() end,
-})
-
-local espCfg = ESPTab:Section({ Title = "Style", Opened = false })
-
-espCfg:Slider({
-    Title = "Max Distance",
-    Desc = "Hide tags beyond this range.",
-    Icon = "ruler",
-    Min = 50,
-    Max = 1000,
-    Default = 200,
-    Step = 50,
-    Suffix = " studs",
-    Flag = "ESPDist",
-    Callback = function(v)
-        S.espDist = v
-        for _, d in pairs(Esps) do
-            if d.bb then d.bb.MaxDistance = v end
+local speedInput
+speedInput = speedSection:Input({
+    Title = "WalkSpeed",
+    Desc = "Any number between 8 and 250.",
+    Value = "16",
+    InputIcon = "hash",
+    Placeholder = "16",
+    Callback = function(text)
+        local n = tonumber(text)
+        if not n then return end
+        n = math.clamp(n, 8, 250)
+        Move.speed = n
+        if Move.speedOn then
+            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = n end
         end
     end,
 })
 
-espCfg:Space({ Columns = 1 })
+speedSection:Space({ Columns = 1 })
 
-espCfg:Colorpicker({
-    Title = "Highlight Color",
-    Desc = "Also tints the name text.",
-    Default = Color3.fromRGB(255, 70, 70),
-    Transparency = 0,
-    Flag = "ESPColor",
-    Callback = function(c)
-        S.espColor = c
-        for _, d in pairs(Esps) do
-            if d.hl then d.hl.FillColor = c end
-            if d.name then d.name.TextColor3 = c end
+speedSection:Toggle({
+    Title = "Apply WalkSpeed",
+    Desc = "Reapplies the value above, including after respawn.",
+    Icon = "wind",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        Move.speedOn = v
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.WalkSpeed = v and Move.speed or 16
         end
     end,
 })
 
--- // perks tab
-local perkSec = PerkTab:Section({ Title = "Self", Opened = true })
+speedSection:Space({ Columns = 1 })
 
-perkSec:Toggle({
-    Title = "Infinite Stamina",
-    Desc = "Stamina stays maxed.",
-    Icon = "zap",
-    Type = "Checkbox",
-    Value = false,
-    Flag = "InfiniteStamina",
-    Callback = function(v)
-        S.stamina = v
-        Toast({ Title = v and "Stamina locked" or "Stamina normal", Icon = "zap" })
-    end,
-})
-
-perkSec:Space({ Columns = 1 })
-
-perkSec:Toggle({
-    Title = "Infinite NVG",
-    Desc = "IsCloaker flag forced on.",
-    Icon = "moon",
-    Type = "Checkbox",
-    Value = false,
-    Flag = "InfiniteNVG",
-    Callback = function(v)
-        S.nvg = v
-        if v and LP.Character then
-            local f = LP.Character:FindFirstChild("IsCloaker")
-            if f then f.Value = true end
+speedSection:Input({
+    Title = "JumpPower",
+    Desc = "Anything from 50 to 250.",
+    Value = "50",
+    InputIcon = "hash",
+    Placeholder = "50",
+    Callback = function(text)
+        local n = tonumber(text)
+        if not n then return end
+        n = math.clamp(n, 50, 250)
+        Move.jump = n
+        if Move.jumpOn then
+            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.UseJumpPower = true
+                hum.JumpPower = n
+            end
         end
-        Toast({ Title = v and "NVG forced on" or "NVG normal", Icon = "moon" })
     end,
 })
 
--- // interface tab
-local uiGen = UITab:Section({ Title = "General", Opened = true })
+speedSection:Space({ Columns = 1 })
 
-uiGen:Keybind({
-    Title = "UI Toggle",
-    Desc = "Key to open/close the window.",
-    Icon = "keyboard",
-    Value = "RightShift",
-    Flag = "UIToggle",
-    Callback = function(v)
-        pcall(function()
-            Window:SetToggleKey(Enum.KeyCode[v])
-        end)
-    end,
-})
-
-uiGen:Space({ Columns = 1 })
-
-uiGen:Dropdown({
-    Title = "Theme",
-    Desc = "WindUI theme.",
-    Icon = "palette",
-    Values = { "Dark", "Light", "Midnight", "Aqua", "Rose" },
-    Default = "Dark",
-    Flag = "UITheme",
-    Callback = function(v)
-        pcall(function() WindUI:SetTheme(v) end)
-    end,
-})
-
-uiGen:Space({ Columns = 1 })
-
-uiGen:Toggle({
-    Title = "Reduced Motion",
-    Desc = "Snap aim instead of smoothing. Helps on weak hardware.",
-    Icon = "accessibility",
+speedSection:Toggle({
+    Title = "Apply JumpPower",
+    Desc = "Locks the value above in place.",
+    Icon = "arrow-up-circle",
     Type = "Checkbox",
     Value = false,
-    Flag = "UIReduced",
-    Callback = function(v) S.reduced = v end,
-})
-
-uiGen:Space({ Columns = 1 })
-
-uiGen:Toggle({
-    Title = "Silent Mode",
-    Desc = "Hide all notifications.",
-    Icon = "bell-off",
-    Type = "Checkbox",
-    Value = false,
-    Flag = "UISilent",
-    Callback = function(v) S.notif = not v end,
-})
-
-uiGen:Space({ Columns = 1 })
-
-uiGen:Toggle({
-    Title = "Mobile Mode",
-    Desc = "Bigger UI for touch screens.",
-    Icon = "smartphone",
-    Type = "Checkbox",
-    Value = S.mobile,
-    Flag = "UIMobile",
     Callback = function(v)
-        S.mobile = v
-        pcall(function() Window:SetUIScale(v and 1.15 or 1) end)
+        Move.jumpOn = v
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            if v then
+                hum.UseJumpPower = true
+                hum.JumpPower = Move.jump
+            else
+                hum.JumpPower = 50
+            end
+        end
     end,
 })
 
-UITab:Space({ Columns = 2 })
+speedSection:Space({ Columns = 2 })
 
-UITab:Button({
-    Title = "Unload Hub",
-    Desc = "Removes the UI and stops every feature.",
-    Icon = "trash-2",
-    Color = Color3.fromHex("#EF4444"),
+speedSection:Button({
+    Title = "Reset movement",
+    Desc = "Puts WalkSpeed and JumpPower back to normal.",
+    Icon = "undo-2",
+    Justify = "Between",
     Callback = function()
-        WindUI:Popup({
-            Title = "Unload Eclipse?",
-            Icon = "alert-triangle",
-            Content = "Every feature will stop and the window will close.",
-            Buttons = {
-                {
-                    Title = "Cancel",
-                    Icon = "x",
-                    Callback = function() end,
-                },
-                {
-                    Title = "Unload",
-                    Icon = "trash-2",
-                    Primary = true,
-                    Callback = function()
-                        for _, c in ipairs(Conns) do
-                            pcall(function() c:Disconnect() end)
-                        end
-                        table.clear(Conns)
-                        ClearESP()
-                        for m in pairs(Boxes) do DelBox(m) end
-                        if fovGui then fovGui:Destroy() end
-                        Window:Destroy()
-                    end,
-                },
-            },
+        Move.speedOn = false
+        Move.jumpOn = false
+        Move.speed = 16
+        Move.jump = 50
+        pcall(function() speedInput:Set("16") end)
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.WalkSpeed = 16
+            hum.JumpPower = 50
+        end
+        notify({
+            Title = "Movement reset",
+            Content = "Back to default speed and jump.",
+            Icon = "solar:refresh-bold",
         })
     end,
 })
 
--- // mobile scale on load
-if S.mobile then
-    pcall(function() Window:SetUIScale(1.15) end)
-end
+local staminaSection = PlayerTab:Section({ Title = "Stamina", Opened = true })
 
--- // cleanup on destroy
-script.Destroying:Connect(function()
+staminaSection:Toggle({
+    Title = "Infinite stamina",
+    Desc = "Stamina stays pinned at full. Sprinting and sliding never drain it.",
+    Icon = "battery-full",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        Stamina.on = v
+        if v and LP.Character then
+            bindStamina(LP.Character)
+        end
+        notify({
+            Title = v and "Stamina locked" or "Stamina normal",
+            Icon = "solar:battery-bold",
+        })
+    end,
+})
+
+-- // local player
+local LocalPlayerTab = Window:Tab({ Title = "Local Player", Icon = "monitor-cog" })
+
+local nvgSection = LocalPlayerTab:Section({ Title = "Night Vision", Opened = true })
+
+nvgSection:Toggle({
+    Title = "Infinite NVG",
+    Desc = "Keeps the night vision flag on at all times.",
+    Icon = "moon",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        Nvg.on = v
+        if LP.Character then
+            local flag = LP.Character:FindFirstChild("IsCloaker")
+            if flag then flag.Value = v end
+        end
+        notify({
+            Title = v and "NVG forced on" or "NVG released",
+            Icon = "solar:moon-bold",
+        })
+    end,
+})
+
+local visualsLocal = LocalPlayerTab:Section({ Title = "Local Visuals", Opened = true })
+
+visualsLocal:Toggle({
+    Title = "Crosshair",
+    Desc = "Show or hide the game's own crosshair.",
+    Icon = "crosshair",
+    Type = "Checkbox",
+    Value = csGet({ "Misc" }, "CrosshairEnabled", true),
+    Callback = function(v) csSet({ "Misc" }, "CrosshairEnabled", v) end,
+})
+
+visualsLocal:Space({ Columns = 1 })
+
+visualsLocal:Toggle({
+    Title = "Hitmarkers",
+    Desc = "Hit sounds and the little tick marks.",
+    Icon = "target",
+    Type = "Checkbox",
+    Value = csGet({ "Misc" }, "HitmarkerEnabled", true),
+    Callback = function(v) csSet({ "Misc" }, "HitmarkerEnabled", v) end,
+})
+
+visualsLocal:Space({ Columns = 2 })
+
+visualsLocal:Toggle({
+    Title = "HUD",
+    Desc = "Toggles the entire in game interface.",
+    Icon = "layout-dashboard",
+    Type = "Checkbox",
+    Value = csGet({ "Misc" }, "UIEnabled", true),
+    Callback = function(v) csSet({ "Misc" }, "UIEnabled", v) end,
+})
+
+-- =====================================================================
+-- COMBAT (PvE)
+-- =====================================================================
+Window:Section({ Title = "Combat (PvE)", Opened = true })
+
+local AimbotPvETab = Window:Tab({ Title = "Aimbot", Icon = "target" })
+
+local pveMain = AimbotPvETab:Section({ Title = "Activation", Opened = true })
+
+pveMain:Toggle({
+    Title = "Enable",
+    Desc = "Tracks the closest AI in your field of view.",
+    Icon = "crosshair",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        Aim.pve.on = v
+        Aim.pve.toggled = false
+        ensureFov()
+        FovRing.Visible = v and Aim.pve.showFov
+        notify({
+            Title = v and "PvE aimbot on" or "PvE aimbot off",
+            Icon = "solar:target-bold",
+        })
+    end,
+})
+
+pveMain:Space({ Columns = 1 })
+
+pveMain:Dropdown({
+    Title = "Activation mode",
+    Desc = "Always tracks. Hold only while the key is down. Toggle flips with the key.",
+    Values = { "Always", "Hold", "Toggle" },
+    Value = "Toggle",
+    AllowNone = false,
+    Callback = function(option)
+        Aim.pve.mode = option
+        Aim.pve.toggled = false
+    end,
+})
+
+pveMain:Space({ Columns = 1 })
+
+pveMain:Keybind({
+    Title = "Activation key",
+    Desc = "Ignored while the mode is set to Always.",
+    Value = "E",
+    Callback = function(v)
+        if keyOk(v) then Aim.pve.key = v end
+    end,
+})
+
+local pveTarget = AimbotPvETab:Section({ Title = "Targeting", Opened = true })
+
+pveTarget:Dropdown({
+    Title = "Target part",
+    Desc = "Where the crosshair lands.",
+    Values = { "Head", "HumanoidRootPart", "Torso", "Hitbox" },
+    Value = "Head",
+    AllowNone = false,
+    Callback = function(option) Aim.pve.part = option end,
+})
+
+pveTarget:Space({ Columns = 1 })
+
+pveTarget:Slider({
+    Title = "Field of view",
+    Desc = "Screen radius in pixels.",
+    Step = 5,
+    Value = { Min = 20, Max = 600, Default = 130 },
+    Callback = function(v)
+        Aim.pve.fov = v
+        if FovRing then
+            FovRing.Size = UDim2.fromOffset(v * 2, v * 2)
+        end
+    end,
+})
+
+pveTarget:Space({ Columns = 1 })
+
+pveTarget:Slider({
+    Title = "Smoothness",
+    Desc = "Higher glides slower. Lower snaps harder.",
+    Step = 0.02,
+    Value = { Min = 0.02, Max = 1, Default = 0.22 },
+    Callback = function(v) Aim.pve.smooth = v end,
+})
+
+pveTarget:Space({ Columns = 1 })
+
+pveTarget:Slider({
+    Title = "Max distance",
+    Desc = "Studs.",
+    Step = 25,
+    Value = { Min = 50, Max = 2000, Default = 700 },
+    Callback = function(v) Aim.pve.dist = v end,
+})
+
+pveTarget:Space({ Columns = 1 })
+
+pveTarget:Slider({
+    Title = "Deadzone",
+    Desc = "Skips targets closer to the centre than this. Keeps the aim from twitching.",
+    Step = 2,
+    Value = { Min = 0, Max = 60, Default = 0 },
+    Callback = function(v) Aim.pve.deadzone = v end,
+})
+
+local pveChecks = AimbotPvETab:Section({ Title = "Checks", Opened = true })
+
+pveChecks:Toggle({
+    Title = "Wall check",
+    Desc = "Skips AI standing behind something solid.",
+    Icon = "eye-off",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v) Aim.pve.wall = v end,
+})
+
+pveChecks:Space({ Columns = 1 })
+
+pveChecks:Toggle({
+    Title = "Show FOV ring",
+    Desc = "Draws the detection radius on screen.",
+    Icon = "circle-dashed",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Aim.pve.showFov = v
+        if FovRing then
+            FovRing.Visible = Aim.pve.on and v
+        end
+    end,
+})
+
+pveChecks:Space({ Columns = 2 })
+
+pveChecks:Button({
+    Title = "Reset PvE aimbot",
+    Desc = "Back to factory defaults.",
+    Icon = "rotate-ccw",
+    Justify = "Between",
+    Callback = function()
+        Aim.pve.on = false
+        Aim.pve.mode = "Toggle"
+        Aim.pve.part = "Head"
+        Aim.pve.fov = 130
+        Aim.pve.smooth = 0.22
+        Aim.pve.dist = 700
+        Aim.pve.wall = true
+        Aim.pve.deadzone = 0
+        if FovRing then FovRing.Visible = false end
+        notify({
+            Title = "PvE aimbot reset",
+            Icon = "solar:refresh-bold",
+        })
+    end,
+})
+
+-- // hitbox pve
+local HitboxPvETab = Window:Tab({ Title = "Hitbox Expander", Icon = "box" })
+
+HitboxPvE = { on = false, size = 6, shell = false }
+
+local pveHitboxMain = HitboxPvETab:Section({ Title = "Expander", Opened = true })
+
+pveHitboxMain:Toggle({
+    Title = "Enable",
+    Desc = "The head becomes a large invisible box so shots land, but the model still looks normal.",
+    Icon = "box",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        HitboxPvE.on = v
+        if v then
+            for _, entry in ipairs(collectPvE()) do
+                applyHitbox(entry.model, HitboxPvE.size, HitboxPvE.shell)
+            end
+        else
+            for model in pairs(Hitboxes) do
+                if isAI(model) then
+                    removeHitbox(model)
+                end
+            end
+        end
+        notify({
+            Title = v and "PvE hitbox on" or "PvE hitbox off",
+            Icon = "solar:box-bold",
+        })
+    end,
+})
+
+pveHitboxMain:Space({ Columns = 1 })
+
+pveHitboxMain:Slider({
+    Title = "Box size",
+    Desc = "Studs. The real hitbox is this large in every direction.",
+    Step = 0.5,
+    Value = { Min = 2, Max = 24, Default = 6 },
+    Callback = function(v)
+        HitboxPvE.size = v
+        for model, entry in pairs(Hitboxes) do
+            if isAI(model) then
+                pcall(function()
+                    entry.head.Size = Vector3.new(v, v, v)
+                    entry.shell.Size = Vector3.new(v, v, v)
+                end)
+            end
+        end
+    end,
+})
+
+pveHitboxMain:Space({ Columns = 1 })
+
+pveHitboxMain:Toggle({
+    Title = "Show real hitbox",
+    Desc = "Draws a translucent shell over the invisible box so you can see the size.",
+    Icon = "scan-eye",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        HitboxPvE.shell = v
+        for model, entry in pairs(Hitboxes) do
+            if isAI(model) then
+                pcall(function() entry.shell.Visible = v end)
+            end
+        end
+    end,
+})
+
+-- // local combat
+local LocalCombatTab = Window:Tab({ Title = "Local Combat", Icon = "laptop" })
+
+local automationSection = LocalCombatTab:Section({ Title = "Automation", Opened = true })
+
+automationSection:Paragraph({
+    Title = "These are the game's own settings",
+    Desc = "Eclipse just flips the same switches the in game menu uses, so they behave exactly like they normally would.",
+})
+
+automationSection:Space({ Columns = 1 })
+
+local autoBashToggle = automationSection:Toggle({
+    Title = "Auto bash",
+    Desc = "Swings automatically at anything close in front of you.",
+    Icon = "swords",
+    Type = "Checkbox",
+    Value = csGet({ "Mobile" }, "AutoBashEnabled", false),
+    Callback = function(v)
+        csSet({ "Mobile" }, "AutoBashEnabled", v)
+        notify({ Title = v and "Auto bash on" or "Auto bash off", Icon = "solar:swords-bold" })
+    end,
+})
+bindSync(autoBashToggle, { "Mobile" }, "AutoBashEnabled", false)
+
+automationSection:Space({ Columns = 1 })
+
+local autoFireToggle = automationSection:Toggle({
+    Title = "Auto fire on target",
+    Desc = "Fires when something hostile sits under the centre reticle.",
+    Icon = "flame",
+    Type = "Checkbox",
+    Value = csGet({ "Mobile" }, "AutoFireOnTargetEnabled", false),
+    Callback = function(v)
+        csSet({ "Mobile" }, "AutoFireOnTargetEnabled", v)
+        notify({ Title = v and "Auto fire on" or "Auto fire off", Icon = "solar:flame-bold" })
+    end,
+})
+bindSync(autoFireToggle, { "Mobile" }, "AutoFireOnTargetEnabled", false)
+
+automationSection:Space({ Columns = 2 })
+
+local aimAssistToggle = automationSection:Toggle({
+    Title = "Aim assist",
+    Desc = "Nudges the reticle toward whatever you are already looking at.",
+    Icon = "magnet",
+    Type = "Checkbox",
+    Value = csGet({ "Mobile" }, "AimAssistEnabled", false),
+    Callback = function(v)
+        csSet({ "Mobile" }, "AimAssistEnabled", v)
+    end,
+})
+bindSync(aimAssistToggle, { "Mobile" }, "AimAssistEnabled", false)
+
+local autoAimToggle = automationSection:Toggle({
+    Title = "Auto aim on fire",
+    Desc = "Enters ADS the moment you press fire.",
+    Icon = "focus",
+    Type = "Checkbox",
+    Value = csGet({ "Mobile" }, "AutoAimOnFireEnabled", false),
+    Callback = function(v)
+        csSet({ "Mobile" }, "AutoAimOnFireEnabled", v)
+    end,
+})
+bindSync(autoAimToggle, { "Mobile" }, "AutoAimOnFireEnabled", false)
+
+local assistSection = LocalCombatTab:Section({ Title = "Assist Tuning", Opened = false })
+
+assistSection:Slider({
+    Title = "Assist strength",
+    Desc = "How hard shots bend toward the target.",
+    Step = 5,
+    Value = {
+        Min = 0,
+        Max = 100,
+        Default = csGet({ "Mobile" }, "AimAssistStrength", 100),
+    },
+    Callback = function(v) csSet({ "Mobile" }, "AimAssistStrength", v) end,
+})
+
+assistSection:Space({ Columns = 1 })
+
+assistSection:Slider({
+    Title = "Assist window",
+    Desc = "How far off centre a target can be before assist kicks in, in degrees.",
+    Step = 1,
+    Value = {
+        Min = 2,
+        Max = 15,
+        Default = csGet({ "Mobile" }, "AimAssistFOVDegrees", 8),
+    },
+    Callback = function(v) csSet({ "Mobile" }, "AimAssistFOVDegrees", v) end,
+})
+
+assistSection:Space({ Columns = 1 })
+
+assistSection:Toggle({
+    Title = "Toggle aim",
+    Desc = "Aim stays on after a tap instead of while holding.",
+    Icon = "mouse-pointer-click",
+    Type = "Checkbox",
+    Value = csGet({ "Game" }, "ToggleAimEnabled", false),
+    Callback = function(v) csSet({ "Game" }, "ToggleAimEnabled", v) end,
+})
+
+local feedbackSection = LocalCombatTab:Section({ Title = "Camera & Feedback", Opened = false })
+
+feedbackSection:Toggle({
+    Title = "Camera shake",
+    Desc = "The little kick you get from firing and impacts.",
+    Icon = "vibrate",
+    Type = "Checkbox",
+    Value = csGet({ "Game" }, "CameraShakeEnabled", true),
+    Callback = function(v) csSet({ "Game" }, "CameraShakeEnabled", v) end,
+})
+
+feedbackSection:Space({ Columns = 1 })
+
+feedbackSection:Toggle({
+    Title = "ADS zoom",
+    Desc = "FOV narrows while you aim.",
+    Icon = "zoom-in",
+    Type = "Checkbox",
+    Value = csGet({ "Game" }, "ADSZoomingEnabled", true),
+    Callback = function(v) csSet({ "Game" }, "ADSZoomingEnabled", v) end,
+})
+
+feedbackSection:Space({ Columns = 2 })
+
+feedbackSection:Toggle({
+    Title = "Execution camera",
+    Desc = "The cinematic angle on executions.",
+    Icon = "video",
+    Type = "Checkbox",
+    Value = csGet({ "Game" }, "RenderNewExecutionCamera", true),
+    Callback = function(v) csSet({ "Game" }, "RenderNewExecutionCamera", v) end,
+})
+
+local audioSection = LocalCombatTab:Section({ Title = "Audio", Opened = false })
+
+audioSection:Slider({
+    Title = "Gunshots",
+    Desc = "Volume for weapon fire.",
+    Step = 5,
+    Value = { Min = 0, Max = 100, Default = csGet({ "Sounds" }, "GunShots", 100) },
+    Callback = function(v) csSet({ "Sounds" }, "GunShots", v) end,
+})
+
+audioSection:Space({ Columns = 1 })
+
+audioSection:Slider({
+    Title = "Footsteps",
+    Desc = "Volume for movement.",
+    Step = 5,
+    Value = { Min = 0, Max = 100, Default = csGet({ "Sounds" }, "Footsteps", 100) },
+    Callback = function(v) csSet({ "Sounds" }, "Footsteps", v) end,
+})
+
+audioSection:Space({ Columns = 1 })
+
+audioSection:Slider({
+    Title = "Voice lines",
+    Desc = "Volume for character barks.",
+    Step = 5,
+    Value = { Min = 0, Max = 100, Default = csGet({ "Sounds" }, "Voicelines", 100) },
+    Callback = function(v) csSet({ "Sounds" }, "Voicelines", v) end,
+})
+
+audioSection:Space({ Columns = 1 })
+
+audioSection:Slider({
+    Title = "Music",
+    Desc = "Volume for the soundtrack.",
+    Step = 5,
+    Value = { Min = 0, Max = 100, Default = csGet({ "Sounds" }, "Music", 100) },
+    Callback = function(v) csSet({ "Sounds" }, "Music", v) end,
+})
+
+audioSection:Space({ Columns = 1 })
+
+audioSection:Toggle({
+    Title = "Tinnitus ringing",
+    Desc = "The ringing noise after explosions.",
+    Icon = "ear",
+    Type = "Checkbox",
+    Value = csGet({}, "TinnitusEnabled", true),
+    Callback = function(v) csSet({}, "TinnitusEnabled", v) end,
+})
+
+audioSection:Space({ Columns = 1 })
+
+audioSection:Toggle({
+    Title = "Low health theme",
+    Desc = "Music that creeps in when you are nearly down.",
+    Icon = "heart-pulse",
+    Type = "Checkbox",
+    Value = csGet({ "Sounds" }, "LowHPMusicEnabled", true),
+    Callback = function(v) csSet({ "Sounds" }, "LowHPMusicEnabled", v) end,
+})
+
+local graphicsSection = LocalCombatTab:Section({ Title = "Graphics", Opened = false })
+
+graphicsSection:Toggle({
+    Title = "Shadows",
+    Desc = "Turning this off is the single biggest win on a weak machine.",
+    Icon = "cloud-sun",
+    Type = "Checkbox",
+    Value = csGet({ "Graphics" }, "CastShadowsEnabled", true),
+    Callback = function(v) csSet({ "Graphics" }, "CastShadowsEnabled", v) end,
+})
+
+graphicsSection:Space({ Columns = 1 })
+
+graphicsSection:Toggle({
+    Title = "Textures",
+    Desc = "Surface detail on world geometry.",
+    Icon = "image",
+    Type = "Checkbox",
+    Value = csGet({ "Graphics" }, "TexturesEnabled", true),
+    Callback = function(v) csSet({ "Graphics" }, "TexturesEnabled", v) end,
+})
+
+graphicsSection:Space({ Columns = 2 })
+
+graphicsSection:Toggle({
+    Title = "Materials",
+    Desc = "PBR materials. Off makes everything flat and cheap.",
+    Icon = "layers",
+    Type = "Checkbox",
+    Value = csGet({ "Graphics" }, "MaterialsEnabled", true),
+    Callback = function(v) csSet({ "Graphics" }, "MaterialsEnabled", v) end,
+})
+
+graphicsSection:Toggle({
+    Title = "VFX",
+    Desc = "Particles, trails and beams.",
+    Icon = "sparkles",
+    Type = "Checkbox",
+    Value = csGet({ "Graphics" }, "VFXEnabled", true),
+    Callback = function(v) csSet({ "Graphics" }, "VFXEnabled", v) end,
+})
+
+graphicsSection:Space({ Columns = 1 })
+
+graphicsSection:Toggle({
+    Title = "Prop clutter",
+    Desc = "Hides decorative props. Collision stays, so nothing breaks.",
+    Icon = "boxes",
+    Type = "Checkbox",
+    Value = csGet({ "Graphics" }, "PropsEnabled", true),
+    Callback = function(v) csSet({ "Graphics" }, "PropsEnabled", v) end,
+})
+
+graphicsSection:Space({ Columns = 1 })
+
+graphicsSection:Slider({
+    Title = "Colour correction",
+    Desc = "How strong the tint over the world is.",
+    Step = 5,
+    Value = {
+        Min = 0,
+        Max = 100,
+        Default = csGet({ "Graphics" }, "ColorCorrectionIntensity", 100),
+    },
+    Callback = function(v) csSet({ "Graphics" }, "ColorCorrectionIntensity", v) end,
+})
+
+-- =====================================================================
+-- VISUALS (PvE)
+-- =====================================================================
+Window:Section({ Title = "Visuals (PvE)", Opened = true })
+
+local EspPvETab = Window:Tab({ Title = "ESP", Icon = "eye" })
+
+local pveEspMain = EspPvETab:Section({ Title = "AI Tags", Opened = true })
+
+pveEspMain:Toggle({
+    Title = "Enable",
+    Desc = "Highlights every AI in the map with a tag above their head.",
+    Icon = "scan",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        Esp.pve.on = v
+        ensureEspGui()
+        refreshEsp("pve")
+        notify({
+            Title = v and "PvE ESP on" or "PvE ESP off",
+            Icon = "solar:eye-bold",
+        })
+    end,
+})
+
+pveEspMain:Space({ Columns = 2 })
+
+pveEspMain:Toggle({
+    Title = "Highlight",
+    Desc = "Soft coloured outline you can see through walls.",
+    Icon = "square",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Esp.pve.highlight = v
+        refreshEsp("pve")
+    end,
+})
+
+pveEspMain:Toggle({
+    Title = "Name",
+    Desc = "Shows the AI name.",
+    Icon = "user",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Esp.pve.name = v
+        refreshEsp("pve")
+    end,
+})
+
+pveEspMain:Space({ Columns = 2 })
+
+pveEspMain:Toggle({
+    Title = "Health",
+    Desc = "Live health above the tag.",
+    Icon = "heart",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Esp.pve.hp = v
+        refreshEsp("pve")
+    end,
+})
+
+pveEspMain:Toggle({
+    Title = "Distance",
+    Desc = "How far away they are, in metres.",
+    Icon = "ruler",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Esp.pve.dist = v
+        refreshEsp("pve")
+    end,
+})
+
+local pveEspStyle = EspPvETab:Section({ Title = "Style", Opened = false })
+
+pveEspStyle:Slider({
+    Title = "Render distance",
+    Desc = "Tags disappear past this range.",
+    Step = 25,
+    Value = { Min = 50, Max = 1500, Default = 250 },
+    Callback = function(v)
+        Esp.pve.distMax = v
+        for _, o in pairs(EspObjects) do
+            if o.bb then o.bb.MaxDistance = v end
+        end
+    end,
+})
+
+pveEspStyle:Space({ Columns = 1 })
+
+pveEspStyle:Colorpicker({
+    Title = "Tag colour",
+    Desc = "Used for the highlight and the name.",
+    Default = Color3.fromRGB(255, 72, 72),
+    Transparency = 0,
+    Callback = function(c)
+        Esp.pve.color = c
+        refreshEsp("pve")
+    end,
+})
+
+-- =====================================================================
+-- COMBAT (PvP)
+-- =====================================================================
+Window:Section({ Title = "Combat (PvP)", Opened = true })
+
+local AimbotPvPTab = Window:Tab({ Title = "Aimbot", Icon = "crosshair" })
+
+local pvpMain = AimbotPvPTab:Section({ Title = "Activation", Opened = true })
+
+pvpMain:Toggle({
+    Title = "Enable",
+    Desc = "Tracks the closest player in your field of view.",
+    Icon = "crosshair",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        Aim.pvp.on = v
+        Aim.pvp.toggled = false
+        notify({
+            Title = v and "PvP aimbot on" or "PvP aimbot off",
+            Icon = "solar:crosshair-bold",
+        })
+    end,
+})
+
+pvpMain:Space({ Columns = 1 })
+
+pvpMain:Dropdown({
+    Title = "Activation mode",
+    Desc = "Same idea as the PvE tab.",
+    Values = { "Always", "Hold", "Toggle" },
+    Value = "Hold",
+    AllowNone = false,
+    Callback = function(option)
+        Aim.pvp.mode = option
+        Aim.pvp.toggled = false
+    end,
+})
+
+pvpMain:Space({ Columns = 1 })
+
+pvpMain:Keybind({
+    Title = "Activation key",
+    Desc = "Default is Q so it stays clear of the PvE key.",
+    Value = "Q",
+    Callback = function(v)
+        if keyOk(v) then Aim.pvp.key = v end
+    end,
+})
+
+local pvpTarget = AimbotPvPTab:Section({ Title = "Targeting", Opened = true })
+
+pvpTarget:Dropdown({
+    Title = "Target part",
+    Desc = "Where the crosshair lands.",
+    Values = { "Head", "HumanoidRootPart", "Torso", "Hitbox" },
+    Value = "Head",
+    AllowNone = false,
+    Callback = function(option) Aim.pvp.part = option end,
+})
+
+pvpTarget:Space({ Columns = 1 })
+
+pvpTarget:Slider({
+    Title = "Field of view",
+    Desc = "Screen radius in pixels.",
+    Step = 5,
+    Value = { Min = 20, Max = 600, Default = 110 },
+    Callback = function(v) Aim.pvp.fov = v end,
+})
+
+pvpTarget:Space({ Columns = 1 })
+
+pvpTarget:Slider({
+    Title = "Smoothness",
+    Desc = "Higher glides slower. Lower snaps harder.",
+    Step = 0.02,
+    Value = { Min = 0.02, Max = 1, Default = 0.28 },
+    Callback = function(v) Aim.pvp.smooth = v end,
+})
+
+pvpTarget:Space({ Columns = 1 })
+
+pvpTarget:Slider({
+    Title = "Max distance",
+    Desc = "Studs.",
+    Step = 25,
+    Value = { Min = 50, Max = 2000, Default = 450 },
+    Callback = function(v) Aim.pvp.dist = v end,
+})
+
+pvpTarget:Space({ Columns = 1 })
+
+pvpTarget:Slider({
+    Title = "Deadzone",
+    Desc = "Ignores targets closer to the centre than this.",
+    Step = 2,
+    Value = { Min = 0, Max = 60, Default = 0 },
+    Callback = function(v) Aim.pvp.deadzone = v end,
+})
+
+local pvpChecks = AimbotPvPTab:Section({ Title = "Checks", Opened = true })
+
+pvpChecks:Toggle({
+    Title = "Wall check",
+    Desc = "Skips players standing behind something solid.",
+    Icon = "eye-off",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v) Aim.pvp.wall = v end,
+})
+
+pvpChecks:Space({ Columns = 1 })
+
+pvpChecks:Toggle({
+    Title = "Skip teammates",
+    Desc = "Never locks onto someone on your own team.",
+    Icon = "users",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v) Aim.pvp.team = v end,
+})
+
+pvpChecks:Space({ Columns = 2 })
+
+pvpChecks:Toggle({
+    Title = "Skip friends",
+    Desc = "Your Roblox friends are ignored.",
+    Icon = "user-check",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v) Aim.pvp.friends = v end,
+})
+
+pvpChecks:Button({
+    Title = "Reset PvP aimbot",
+    Desc = "Back to factory defaults.",
+    Icon = "rotate-ccw",
+    Justify = "Between",
+    Callback = function()
+        Aim.pvp.on = false
+        Aim.pvp.mode = "Hold"
+        Aim.pvp.part = "Head"
+        Aim.pvp.fov = 110
+        Aim.pvp.smooth = 0.28
+        Aim.pvp.dist = 450
+        Aim.pvp.wall = true
+        Aim.pvp.team = true
+        Aim.pvp.friends = true
+        notify({
+            Title = "PvP aimbot reset",
+            Icon = "solar:refresh-bold",
+        })
+    end,
+})
+
+-- // hitbox pvp
+local HitboxPvPTab = Window:Tab({ Title = "Hitbox Expander", Icon = "package-open" })
+
+HitboxPvP = { on = false, size = 6, shell = false }
+
+local pvpHitboxMain = HitboxPvPTab:Section({ Title = "Expander", Opened = true })
+
+pvpHitboxMain:Toggle({
+    Title = "Enable",
+    Desc = "Same trick as the PvE tab, but applied to players.",
+    Icon = "package-open",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        HitboxPvP.on = v
+        if v then
+            for _, entry in ipairs(collectPvP(false, false)) do
+                applyHitbox(entry.model, HitboxPvP.size, HitboxPvP.shell)
+            end
+        else
+            for model in pairs(Hitboxes) do
+                if not isAI(model) then
+                    removeHitbox(model)
+                end
+            end
+        end
+        notify({
+            Title = v and "PvP hitbox on" or "PvP hitbox off",
+            Icon = "solar:package-bold",
+        })
+    end,
+})
+
+pvpHitboxMain:Space({ Columns = 1 })
+
+pvpHitboxMain:Slider({
+    Title = "Box size",
+    Desc = "Studs. Applies in every direction.",
+    Step = 0.5,
+    Value = { Min = 2, Max = 24, Default = 6 },
+    Callback = function(v)
+        HitboxPvP.size = v
+        for model, entry in pairs(Hitboxes) do
+            if not isAI(model) then
+                pcall(function()
+                    entry.head.Size = Vector3.new(v, v, v)
+                    entry.shell.Size = Vector3.new(v, v, v)
+                end)
+            end
+        end
+    end,
+})
+
+pvpHitboxMain:Space({ Columns = 1 })
+
+pvpHitboxMain:Toggle({
+    Title = "Show real hitbox",
+    Desc = "Translucent shell so you can judge the size.",
+    Icon = "scan-eye",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        HitboxPvP.shell = v
+        for model, entry in pairs(Hitboxes) do
+            if not isAI(model) then
+                pcall(function() entry.shell.Visible = v end)
+            end
+        end
+    end,
+})
+
+pvpHitboxMain:Space({ Columns = 1 })
+
+pvpHitboxMain:Toggle({
+    Title = "Skip teammates",
+    Desc = "Leaves anyone on your team alone.",
+    Icon = "users",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        HitboxPvP.team = v
+    end,
+})
+
+HitboxPvP.team = true
+
+-- =====================================================================
+-- VISUALS (PvP)
+-- =====================================================================
+Window:Section({ Title = "Visuals (PvP)", Opened = true })
+
+local EspPvPTab = Window:Tab({ Title = "ESP", Icon = "eye-dashed" })
+
+local pvpEspMain = EspPvPTab:Section({ Title = "Player Tags", Opened = true })
+
+pvpEspMain:Toggle({
+    Title = "Enable",
+    Desc = "Tags every other player in the server.",
+    Icon = "scan",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        Esp.pvp.on = v
+        ensureEspGui()
+        refreshEsp("pvp")
+        notify({
+            Title = v and "PvP ESP on" or "PvP ESP off",
+            Icon = "solar:eye-bold",
+        })
+    end,
+})
+
+pvpEspMain:Space({ Columns = 2 })
+
+pvpEspMain:Toggle({
+    Title = "Highlight",
+    Desc = "Soft outline through walls.",
+    Icon = "square",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Esp.pvp.highlight = v
+        refreshEsp("pvp")
+    end,
+})
+
+pvpEspMain:Toggle({
+    Title = "Name",
+    Desc = "Display name instead of username.",
+    Icon = "user",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Esp.pvp.name = v
+        refreshEsp("pvp")
+    end,
+})
+
+pvpEspMain:Space({ Columns = 2 })
+
+pvpEspMain:Toggle({
+    Title = "Health",
+    Desc = "Live health above the tag.",
+    Icon = "heart",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Esp.pvp.hp = v
+        refreshEsp("pvp")
+    end,
+})
+
+pvpEspMain:Toggle({
+    Title = "Distance",
+    Desc = "Range in metres.",
+    Icon = "ruler",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Esp.pvp.dist = v
+        refreshEsp("pvp")
+    end,
+})
+
+pvpEspMain:Space({ Columns = 1 })
+
+pvpEspMain:Toggle({
+    Title = "Skip teammates",
+    Desc = "Hides anyone on your own team.",
+    Icon = "users",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Esp.pvp.team = v
+        refreshEsp("pvp")
+    end,
+})
+
+pvpEspMain:Space({ Columns = 1 })
+
+pvpEspMain:Toggle({
+    Title = "Skip friends",
+    Desc = "Hides your Roblox friends.",
+    Icon = "user-check",
+    Type = "Checkbox",
+    Value = true,
+    Callback = function(v)
+        Esp.pvp.friends = v
+        refreshEsp("pvp")
+    end,
+})
+
+local pvpEspStyle = EspPvPTab:Section({ Title = "Style", Opened = false })
+
+pvpEspStyle:Slider({
+    Title = "Render distance",
+    Desc = "Tags disappear past this range.",
+    Step = 25,
+    Value = { Min = 50, Max = 2000, Default = 500 },
+    Callback = function(v)
+        Esp.pvp.distMax = v
+        for _, o in pairs(EspObjects) do
+            if o.bb then o.bb.MaxDistance = v end
+        end
+    end,
+})
+
+pvpEspStyle:Space({ Columns = 1 })
+
+pvpEspStyle:Colorpicker({
+    Title = "Tag colour",
+    Desc = "Used for the highlight and the name.",
+    Default = Color3.fromRGB(80, 200, 255),
+    Transparency = 0,
+    Callback = function(c)
+        Esp.pvp.color = c
+        refreshEsp("pvp")
+    end,
+})
+
+-- =====================================================================
+-- UTILITY
+-- =====================================================================
+Window:Section({ Title = "Utility", Opened = true })
+
+local WorldTab = Window:Tab({ Title = "World", Icon = "globe" })
+
+local worldSection = WorldTab:Section({ Title = "Environment", Opened = true })
+
+worldSection:Input({
+    Title = "Time of day",
+    Desc = "Anything from 0 to 24. Decimals work.",
+    Value = "14",
+    InputIcon = "clock",
+    Placeholder = "14",
+    Callback = function(text)
+        local n = tonumber(text)
+        if not n then return end
+        World.time = math.clamp(n, 0, 24)
+        if World.timeOn then
+            pcall(function() Lighting.ClockTime = World.time end)
+        end
+    end,
+})
+
+worldSection:Space({ Columns = 1 })
+
+worldSection:Toggle({
+    Title = "Lock time",
+    Desc = "Holds the clock at the value above instead of letting it drift.",
+    Icon = "clock",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        World.timeOn = v
+        if v then
+            pcall(function() Lighting.ClockTime = World.time end)
+        end
+    end,
+})
+
+worldSection:Space({ Columns = 1 })
+
+worldSection:Toggle({
+    Title = "Clear fog",
+    Desc = "Pushes the fog range out so you can see across the map.",
+    Icon = "cloud-off",
+    Type = "Checkbox",
+    Value = false,
+    Callback = function(v)
+        World.fogOff = v
+        if v then
+            World.fogPrev = { Lighting.FogStart, Lighting.FogEnd }
+            pcall(function()
+                Lighting.FogStart = 1e6
+                Lighting.FogEnd = 1e6
+            end)
+        elseif World.fogPrev then
+            pcall(function()
+                Lighting.FogStart = World.fogPrev[1]
+                Lighting.FogEnd = World.fogPrev[2]
+            end)
+        end
+    end,
+})
+
+local minimapSection = WorldTab:Section({ Title = "Minimap", Opened = true })
+
+minimapSection:Toggle({
+    Title = "Minimap",
+    Desc = "The radar in the corner.",
+    Icon = "map",
+    Type = "Checkbox",
+    Value = csGet({ "Game" }, "MinimapEnabled", true),
+    Callback = function(v) csSet({ "Game" }, "MinimapEnabled", v) end,
+})
+
+minimapSection:Space({ Columns = 1 })
+
+minimapSection:Toggle({
+    Title = "Lock rotation",
+    Desc = "Keeps north pointing up.",
+    Icon = "compass",
+    Type = "Checkbox",
+    Value = csGet({ "Game" }, "MinimapRotationLocked", false),
+    Callback = function(v) csSet({ "Game" }, "MinimapRotationLocked", v) end,
+})
+
+minimapSection:Space({ Columns = 2 })
+
+minimapSection:Slider({
+    Title = "Radar size",
+    Desc = "Scales the minimap only. Zoom and detection are unaffected.",
+    Step = 5,
+    Value = {
+        Min = 60,
+        Max = 120,
+        Default = csGet({ "Game" }, "MinimapScalePercent", 100),
+    },
+    Callback = function(v) csSet({ "Game" }, "MinimapScalePercent", v) end,
+})
+
+-- =====================================================================
+-- RESET QUEUE
+-- =====================================================================
+-- filled in order so the reset button can walk it safely
+ResetQueue = {
+    function()
+        Aim.pve.on = false
+        Aim.pvp.on = false
+        Aim.pve.toggled = false
+        Aim.pvp.toggled = false
+        if FovRing then FovRing.Visible = false end
+    end,
+    function()
+        HitboxPvE.on = false
+        HitboxPvP.on = false
+        clearHitboxes()
+    end,
+    function()
+        Esp.pve.on = false
+        Esp.pvp.on = false
+        clearAllEsp()
+    end,
+    function()
+        Nvg.on = false
+    end,
+    function()
+        Stamina.on = false
+    end,
+    function()
+        Move.noclip = false
+        Move.speedOn = false
+        Move.jumpOn = false
+        local char = LP.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.WalkSpeed = 16
+            hum.JumpPower = 50
+        end
+        if char then
+            for _, d in ipairs(char:GetDescendants()) do
+                if d:IsA("BasePart") then
+                    pcall(function() d.CanCollide = true end)
+                end
+            end
+        end
+    end,
+    function()
+        World.timeOn = false
+        World.fogOff = false
+        World.ambientOn = false
+        if World.fogPrev then
+            pcall(function()
+                Lighting.FogStart = World.fogPrev[1]
+                Lighting.FogEnd = World.fogPrev[2]
+            end)
+        end
+    end,
+}
+
+-- =====================================================================
+-- CLEANUP
+-- =====================================================================
+local function cleanup()
     for _, c in ipairs(Conns) do
         pcall(function() c:Disconnect() end)
     end
     table.clear(Conns)
-    ClearESP()
-    for m in pairs(Boxes) do DelBox(m) end
-    if fovGui then fovGui:Destroy() end
-end)
 
--- // hello
-Toast({
-    Title = "Eclipse loaded",
-    Content = "Press RightShift to toggle. Examination only.",
-    Icon = "solar:check-circle-bold",
-    Duration = 5,
-})
+    clearHitboxes()
+    clearAllEsp()
+
+    if FovGui then
+        FovGui:Destroy()
+        FovGui = nil
+    end
+    if EspGui then
+        EspGui:Destroy()
+        EspGui = nil
+    end
+end
+
+script.Destroying:Connect(cleanup)
